@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profile": "balanced",
+  "weights": {
+    "cpu": 0.28,
+    "gpu": 0.22,
+    "soc": 0.24,
+    "ssd": 0.10,
+    "power": 0.16
+  },
+  "history_retention": {
+    "raw_minutes": 1440,
+    "agg_hours": 720
+  },
+  "whiteList": [
+    "Xcode",
+    "Android Studio",
+    "idea",
+    "Final Cut Pro",
+    "DaVinci Resolve",
+    "Ollama",
+    "LM Studio",
+    "Docker",
+    "Blender"
+  ],
+  "safety_thresholds": {
+    "thermal_safety_score": 82,
+    "sustained_seconds": 15,
+    "sample_interval_sec": 2
+  }
+}
