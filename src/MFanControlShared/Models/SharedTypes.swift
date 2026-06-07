@@ -45,11 +45,12 @@ public struct HardwareProfile: Codable, Sendable {
 }
 
 public struct ControlCommand: Codable, Sendable {
-    public enum Action: String, Codable {
+    public enum Action: String, Codable, Sendable {
         case setProfile
         case applyPolicy
         case restoreDefault
         case refreshState
+        case refreshThrottle
     }
 
     public var action: Action

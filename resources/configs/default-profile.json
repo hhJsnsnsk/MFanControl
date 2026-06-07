@@ -10,7 +10,7 @@
   },
   "history_retention": {
     "raw_minutes": 1440,
-    "agg_hours": 720
+    "aggregate_hours": 720
   },
   "whiteList": [
     "Xcode",
@@ -26,6 +26,7 @@
   "safety_thresholds": {
     "thermal_safety_score": 82,
     "sustained_seconds": 15,
-    "sample_interval_sec": 2
+    "sample_interval_sec": 2,
+    "safety_reason_debounce_minutes": 15
   }
 }

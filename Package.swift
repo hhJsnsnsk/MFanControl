@@ -15,11 +15,14 @@ let package = Package(
     targets: [
         .target(
             name: "MFanControlShared",
-            path: "src/MFanControlShared"
+            path: "src/MFanControlShared",
+            linkerSettings: [
+                .linkedFramework("IOKit")
+            ]
         ),
-        .target(
+        .executableTarget(
             name: "MFanControlApp",
-            dependencies: ["MFanControlShared"],
+            dependencies: ["MFanControlShared", "MFanControlHelperCore"],
             path: "src/MFanControlApp",
             resources: [
                 .copy("Resources")
@@ -32,15 +35,31 @@ let package = Package(
         ),
         .executableTarget(
             name: "MFanControlCLI",
-            dependencies: ["MFanControlShared"],
+            dependencies: ["MFanControlShared", "MFanControlHelperCore"],
             path: "src/MFanControlCLI/Sources"
         ),
         .executableTarget(
             name: "MFanControlHelper",
-            dependencies: ["MFanControlShared"],
+            dependencies: ["MFanControlShared", "MFanControlHelperCore"],
             path: "src/MFanControlHelper/Daemon",
-            resources: [
-                .copy("../Resources")
+            sources: ["DaemonMain.swift"]
+        ),
+        .target(
+            name: "MFanControlHelperCore",
+            dependencies: ["MFanControlShared"],
+            path: "src/MFanControlHelper",
+            exclude: ["Resources"],
+            sources: [
+                "Daemon/FanControlDaemon.swift",
+                "Daemon/FanControlXPCService.swift",
+                "IPC/ServiceProtocol.swift",
+                "IPC/XPCHost.swift",
+                "SMC/SmcBridge.swift",
+                "SMC/SMCIOKitBridge.swift",
+                "SMCKeys/KeyCatalog.swift"
+            ],
+            linkerSettings: [
+                .linkedFramework("IOKit")
             ]
         ),
         .testTarget(
@@ -50,7 +69,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MFanControlIntegrationTests",
-            dependencies: ["MFanControlApp", "MFanControlHelper", "MFanControlCLI", "MFanControlShared"],
+            dependencies: ["MFanControlApp", "MFanControlHelperCore", "MFanControlCLI", "MFanControlShared"],
             path: "tests/integration"
         )
     ]
