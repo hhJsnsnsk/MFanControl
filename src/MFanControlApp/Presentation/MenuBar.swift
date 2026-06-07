@@ -3,6 +3,10 @@ import MFanControlShared
 
 public struct MenuBarViewModel {
     var currentTempC: Double?
+    var tempStatusEmoji: String = "🟢"
+    var controlStateEmoji: String = "⚪️"
+    var availableSensorsCount: Int = 0
+    var totalSensorsCount: Int = 0
     var hottestSensorLabel: String = "N/A"
     var currentRPM: Int = 0
     var targetRPM: Int = 0
@@ -34,7 +38,7 @@ public final class MenuBarController {
 
     public func start() {
         statusItem.menu = menu
-        statusItem.button?.title = "MF"
+        statusItem.button?.title = "🧊 MF"
         statusItem.button?.toolTip = "Apple Silicon Smart Thermal Manager"
         refresh()
     }
@@ -56,45 +60,47 @@ public final class MenuBarController {
 
         let model = model(from: snapshot, command: command)
         button.title = statusTitle(for: model)
+        button.toolTip = [
+            "MFanControl",
+            "设备: \(model.deviceLabel)",
+            "状态: \(model.state) / \(model.source)",
+            "模式: \(model.mode)",
+            model.currentTempC.map { "最高温: \(Int($0))°C (\(model.hottestSensorLabel))" } ?? "最高温: 不可用"
+        ].joined(separator: " ｜ ")
 
         rebuildMenu()
 
-        let header = NSMenuItem(title: "MFanControl", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
+        menu.addItem(headerItem("🧠 MFanControl"))
+        menu.addItem(NSMenuItem.separator())
+
+        menu.addItem(infoItem("🖥 设备", "\(model.deviceLabel)"))
+        menu.addItem(infoItem("🧭 状态", "\(model.state) / \(model.source)"))
+        menu.addItem(infoItem("⚙️ 模式", menuLabel(for: model.mode)))
+        menu.addItem(infoItem("🌡️ 最高温", hottestTemperatureText(model)))
+        menu.addItem(infoItem("🌀 风扇", "\(model.currentRPM)rpm 目标\(model.targetRPM)rpm"))
+        menu.addItem(infoItem("📈 热压力", "\(Int(model.thermalScore))"))
+        menu.addItem(infoItem("🔧 降频", model.cpuThrottled || model.gpuThrottled ? "已触发（CPU: \(model.cpuThrottled ? "是" : "否"), GPU: \(model.gpuThrottled ? "是" : "否")）" : "未触发"))
+        menu.addItem(infoItem("📡 传感器", "\(model.availableSensorsCount)/\(model.totalSensorsCount) 可用"))
+        menu.addItem(infoItem("🔬 原因", model.reason))
 
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "设备: \(model.deviceLabel)", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "状态: \(model.state) / \(model.source)", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "模式: \(model.mode)", action: nil, keyEquivalent: ""))
-        if let temp = model.currentTempC {
-            menu.addItem(NSMenuItem(title: "最高温度: \(model.hottestSensorLabel) \(Int(temp))℃", action: nil, keyEquivalent: ""))
-        } else {
-            menu.addItem(NSMenuItem(title: "最高温度: 不可用", action: nil, keyEquivalent: ""))
-        }
-        menu.addItem(NSMenuItem(title: "RPM: \(model.currentRPM) (目标 \(model.targetRPM))", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "热压力: \(Int(model.thermalScore))", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "降频: CPU \(model.cpuThrottled ? "是" : "否"), GPU \(model.gpuThrottled ? "是" : "否")", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "原因: \(model.reason)", action: nil, keyEquivalent: ""))
-
-        menu.addItem(NSMenuItem.separator())
-        let sensors = NSMenuItem(title: "传感器温度", action: nil, keyEquivalent: "")
+        let sensors = NSMenuItem(title: "🌡️ 传感器明细", action: nil, keyEquivalent: "")
         sensors.submenu = NSMenu(title: "sensors")
         for reading in model.sensorReadings {
-            let title: String
-            if reading.available, let value = reading.valueC {
-                title = "\(reading.label): \(Int(value))℃"
-            } else {
-                title = "\(reading.label): 不可用 (\(reading.reason))"
-            }
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let status = reading.available ? "✅" : "⚠️"
+            let label = reading.label
+            let text = reading.available
+                ? "\(Int(reading.valueC ?? 0))℃"
+                : "不可用 (\(reading.reason))"
+            let detail = "\(status) \(label)：\(text)"
+            let item = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
             item.isEnabled = false
             sensors.submenu?.addItem(item)
         }
         menu.addItem(sensors)
 
         menu.addItem(NSMenuItem.separator())
-        let modeMenu = NSMenuItem(title: "切换模式", action: nil, keyEquivalent: "")
+        let modeMenu = NSMenuItem(title: "🎛️ 切换模式", action: nil, keyEquivalent: "")
         modeMenu.submenu = NSMenu(title: "mode")
         for mode in ThermalPolicy.Mode.allCases {
             let item = NSMenuItem(title: menuLabel(for: mode), action: #selector(didSelectMode(_:)), keyEquivalent: "")
@@ -106,12 +112,12 @@ public final class MenuBarController {
         }
         menu.addItem(modeMenu)
 
-        let restore = NSMenuItem(title: "恢复 Apple 默认", action: #selector(didRestoreDefault), keyEquivalent: "r")
+        let restore = NSMenuItem(title: "♻️ 恢复 Apple 默认", action: #selector(didRestoreDefault), keyEquivalent: "r")
         restore.target = self
         menu.addItem(restore)
 
         menu.addItem(NSMenuItem.separator())
-        let quit = NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "🚪 退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)
     }
@@ -139,25 +145,39 @@ public final class MenuBarController {
         model.canControl = snapshot.hardwareProfile?.fans.contains(where: { $0.controllable }) ?? false
         model.reason = command?.reason ?? snapshot.reason
         model.sensorReadings = coordinator.latestSensorReadings(availability: snapshot.sensorAvailability)
-        if let hottest = model.sensorReadings.filter({ $0.available }).max(by: { ($0.valueC ?? -.infinity) < ($1.valueC ?? -.infinity) }) {
+
+        if let hottest = model.sensorReadings
+            .filter({ $0.available })
+            .max(by: { ($0.valueC ?? -.infinity) < ($1.valueC ?? -.infinity) }) {
             model.currentTempC = hottest.valueC
             model.hottestSensorLabel = hottest.label
         }
+
         model.cpuThrottled = snapshot.throttleState.cpuThermalThrottled
         model.gpuThrottled = snapshot.throttleState.gpuThermalThrottled
+        model.availableSensorsCount = model.sensorReadings.filter(\.available).count
+        model.totalSensorsCount = model.sensorReadings.count
+        model.controlStateEmoji = stateIcon(
+            for: model.state,
+            source: model.source,
+            hasThrottle: model.cpuThrottled || model.gpuThrottled,
+            canControl: model.canControl
+        )
+        if let temperature = model.currentTempC {
+            model.tempStatusEmoji = temperatureBandEmoji(temperature)
+        }
 
         let hardware = snapshot.hardwareProfile ?? coordinator.hardwareProfile
         model.deviceLabel = "\(hardware.chip) / \(hardware.deviceModel)"
-
         return model
     }
 
     private func statusTitle(for model: MenuBarViewModel) -> String {
         guard model.canControl else { return "MFanControl" }
         guard let temp = model.currentTempC else {
-            return "N/A"
+            return "\(model.controlStateEmoji) N/A"
         }
-        return String(format: "%.0f°", temp)
+        return "\(model.tempStatusEmoji) \(String(format: "%.0f°", temp))"
     }
 
     private func rebuildMenu() {
@@ -176,6 +196,60 @@ public final class MenuBarController {
             return "性能"
         case .customCurve:
             return "自定义曲线"
+        }
+    }
+
+    private func menuLabel(for modeName: String) -> String {
+        let translated = menuLabel(for: ThermalPolicy.Mode(rawValue: modeName) ?? .balanced)
+        return translated
+    }
+
+    private func infoItem(_ title: String, _ value: String) -> NSMenuItem {
+        NSMenuItem(title: "\(title)：\(value)", action: nil, keyEquivalent: "")
+    }
+
+    private func headerItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    private func hottestTemperatureText(_ model: MenuBarViewModel) -> String {
+        guard let temp = model.currentTempC else {
+            return "不可用"
+        }
+        return "\(model.hottestSensorLabel) \(Int(temp))℃"
+    }
+
+    private func stateIcon(for state: String, source: String, hasThrottle: Bool, canControl: Bool) -> String {
+        if hasThrottle {
+            return "🟠"
+        }
+        if !canControl {
+            return "⚪️"
+        }
+        if state == "safetyFallback" || state == "manualDefault" {
+            return "🛑"
+        }
+        if source == "safetyMode" {
+            return "🔶"
+        }
+        if state == "smartControl" {
+            return "🟢"
+        }
+        return "🔵"
+    }
+
+    private func temperatureBandEmoji(_ temp: Double) -> String {
+        switch Int(temp) {
+        case ..<70:
+            return "🟢"
+        case 70..<80:
+            return "🟡"
+        case 80..<90:
+            return "🟠"
+        default:
+            return "🔴"
         }
     }
 }
