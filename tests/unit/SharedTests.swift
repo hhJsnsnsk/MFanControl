@@ -815,6 +815,76 @@ final class SharedTests: XCTestCase {
         XCTAssertEqual(state.state, .safetyFallback)
     }
 
+    func testServiceRecoversFromSensorFaultAfterGoodSampleReturns() {
+        final class RecoverySampler: SensorSampler {
+            private var reads = 0
+
+            func nextSample(at timestamp: Date) -> SensorSampleOutput {
+                reads += 1
+                if reads == 1 {
+                    return SensorSampleOutput(
+                        sample: SensorSample(timestamp: timestamp),
+                        availability: [
+                            SensorReadingSources.cpu: .init(available: false, confidence: 0, reason: "missing"),
+                            SensorReadingSources.gpu: .init(available: false, confidence: 0, reason: "missing"),
+                            SensorReadingSources.soc: .init(available: false, confidence: 0, reason: "missing")
+                        ],
+                        throttleState: .init(cpuThermalThrottled: false, gpuThermalThrottled: false, reason: "missing"),
+                        powerSource: "unknown"
+                    )
+                }
+
+                return SensorSampleOutput(
+                    sample: SensorSample(
+                        timestamp: timestamp,
+                        cpuPcoreTempC: 66,
+                        cpuEcoreTempC: 62,
+                        gpuTempC: 64,
+                        socTempC: 63,
+                        ssdTempC: 40,
+                        batteryTempC: 35,
+                        memoryTempC: 44,
+                        powerWatts: 28,
+                        sustainedLoadSec: 14
+                    ),
+                    availability: [
+                        SensorReadingSources.cpu: .init(available: true, confidence: 1, reason: "recovered"),
+                        SensorReadingSources.gpu: .init(available: true, confidence: 1, reason: "recovered"),
+                        SensorReadingSources.soc: .init(available: true, confidence: 1, reason: "recovered")
+                    ],
+                    throttleState: .init(cpuThermalThrottled: false, gpuThermalThrottled: false, reason: "ok"),
+                    powerSource: "AC"
+                )
+            }
+        }
+
+        let profile = HardwareProfile(
+            chip: "Apple M2",
+            deviceModel: "MacBookPro",
+            isAppleSilicon: true,
+            hasFans: true,
+            fans: [FanCapability(fanCount: 1, minRPM: 1200, maxRPM: 6200, modelIdentifier: "F0", controllable: true)]
+        )
+        let service = FanControlRuntimeService(
+            hardwareProfile: profile,
+            sensorSampler: RecoverySampler(),
+            telemetryStore: InMemoryTelemetryStore(capacity: 30)
+        )
+
+        _ = service.readSensorSample()
+        XCTAssertEqual(service.currentState().state, .safetyFallback)
+        XCTAssertEqual(service.currentState().reason, "sensor-fault")
+
+        _ = service.readSensorSample()
+        XCTAssertEqual(service.currentState().state, .discovering)
+        XCTAssertEqual(service.currentState().reason, "sensor-recovered")
+
+        let result = service.apply(ControlCommand(action: .setProfile, targetRPM: 1800))
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(service.currentState().state, .smartControl)
+        XCTAssertEqual(service.currentState().source, .appAuto)
+    }
+
     func testRuntimeServiceRecoversToSmartControlAfterSystemWakeWithGoodSensorSample() {
         final class WakeSampler: SensorSampler {
             private var reads = 0

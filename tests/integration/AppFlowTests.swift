@@ -447,7 +447,7 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(coordinator.currentDecisionReason().contains("appBoost=true"))
     }
 
-    func testXPCRemoteUnavailableFallsBackToLocalRuntime() {
+    func testXPCRemoteUnavailableReturnsTransportErrorForControl() {
         let host = XPCHost(mode: .remoteOnly, serviceName: "com.starrysky.MFanControlHelper.xpc.missing")
         host.start()
 
@@ -460,13 +460,10 @@ final class AppFlowTests: XCTestCase {
 
         let command = ControlCommand(action: .setProfile, targetRPM: 1800)
         let result = host.apply(command)
-        let expected = FanControlRuntimeService.shared.apply(command)
-
-        XCTAssertEqual(result.success, expected.success)
-        XCTAssertEqual(result.reason, expected.reason)
-        XCTAssertEqual(result.state, expected.state)
-        XCTAssertEqual(result.failure, expected.failure)
-        XCTAssertEqual(result.source, expected.source)
+        XCTAssertFalse(result.success)
+        XCTAssertEqual(result.failure, .hardwareUnreachable)
+        XCTAssertEqual(result.state, .safetyFallback)
+        XCTAssertEqual(result.source, .safetyMode)
 
         let postState = FanControlRuntimeService.shared.currentState()
         XCTAssertEqual(postState.hardwareProfile?.deviceModel, snapshot.hardwareProfile?.deviceModel)

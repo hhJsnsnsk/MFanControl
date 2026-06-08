@@ -24,6 +24,7 @@ case .status:
     print("source=\(state.source.rawValue)")
     print("mode=\(state.activeProfile)")
     print("rpm=current:\(state.currentRPM) target:\(state.targetRPM)")
+    print("reason=\(state.reason)")
     if let score = state.thermalScore {
         print("thermalScore=\(Int(score))")
     }

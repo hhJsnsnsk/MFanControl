@@ -3,11 +3,14 @@ import MFanControlShared
 import MFanControlHelperCore
 
 final class XPCClient: FanControlServiceProtocol {
-    private let host = XPCHost()
+    private let host: XPCHost
 
     init() {
+        let useRemote = ProcessInfo.processInfo.environment[FanControlXPCDefaults.useRemoteEnv] != "0"
+        host = XPCHost(mode: useRemote ? .remoteOnly : .localOnly)
         host.start()
     }
+
 
     func currentState() -> FanControlSnapshot {
         host.currentState()

@@ -9,7 +9,10 @@ public enum FanControlXPCConnectionMode: String, Codable, CaseIterable {
 
 public enum FanControlXPCDefaults {
     public static let serviceName = "com.starrysky.MFanControlHelper.xpc"
+    public static let helperServiceLabel = "com.starrysky.MFanControlHelper"
     public static let useRemoteEnv = "MFANCONTROL_USE_XPC"
+    public static let helperLaunchdServiceLabelEnv = "MFANCONTROL_HELPER_SERVICE_NAME"
+    public static let helperServiceNameEnv = "MFANCONTROL_HELPER_SERVICE_NAME"
 }
 
 @objc public protocol FanControlXPCServiceProtocol: NSObjectProtocol {

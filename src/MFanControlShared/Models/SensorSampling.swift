@@ -358,6 +358,7 @@ public final class SystemSensorSampler: SensorSampler {
         let batt = commandRunner.command("/usr/bin/env", ["pmset", "-g", "batt"])
         var parsed = parseSample(fromPowermetrics: powermetrics, pmset: pmsetTherm, timestamp: timestamp)
         parsed.rawTemperatureSensors = rawTemperatureSensorSource.readRawTemperatureSensors()
+        parsed = enrichWithRawTemperatureFallback(parsed)
         let power = powerSource(from: batt)
         let availability = availability(for: parsed)
         let finalSample = withSustainedLoad(parsed, timestamp: timestamp)
@@ -532,6 +533,54 @@ public final class SystemSensorSampler: SensorSampler {
         lastSampleAt = timestamp
         value.sustainedLoadSec = sustainedLoad
         return value
+    }
+
+    private func enrichWithRawTemperatureFallback(_ sample: SensorSample) -> SensorSample {
+        var output = sample
+        guard !sample.rawTemperatureSensors.isEmpty else {
+            return output
+        }
+
+        let raw = sample.rawTemperatureSensors
+        if output.cpuPcoreTempC == nil {
+            output.cpuPcoreTempC = maxTemperature(
+                from: raw,
+                where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") }
+            )
+        }
+        if output.gpuTempC == nil {
+            output.gpuTempC = maxTemperature(
+                from: raw,
+                where: { $0.name.localizedCaseInsensitiveContains("PMU2") || $0.name.localizedCaseInsensitiveContains("PMU Device") }
+            )
+        }
+        if output.socTempC == nil {
+            output.socTempC = maxTemperature(
+                from: raw,
+                where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") }
+            )
+        }
+        if output.ssdTempC == nil {
+            output.ssdTempC = maxTemperature(
+                from: raw,
+                where: { $0.name.localizedCaseInsensitiveContains("NAND") || $0.name.localizedCaseInsensitiveContains("SSD") }
+            )
+        }
+        if output.memoryTempC == nil {
+            output.memoryTempC = maxTemperature(
+                from: raw,
+                where: { $0.name.localizedCaseInsensitiveContains("PMU2 Device") }
+            )
+        }
+        return output
+    }
+
+    private func maxTemperature(
+        from readings: [RawTemperatureSensorReading],
+        where predicate: (RawTemperatureSensorReading) -> Bool
+    ) -> Double? {
+        let values = readings.filter(predicate).map(\.tempC)
+        return values.isEmpty ? nil : values.max()
     }
 
     private func powerSource(from text: String?) -> String {
