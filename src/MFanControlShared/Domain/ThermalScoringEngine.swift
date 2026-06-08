@@ -16,9 +16,9 @@ public struct ThermalScoringEngine {
 
     public init(
         weights: ThermalWeights = ThermalWeights(),
-        sustainedWindowSec: Double = 15,
+        sustainedWindowSec: Double = 25,
         sampleIntervalSec: Double = 2,
-        smoothingFactor: Double = 0.3
+        smoothingFactor: Double = 0.2
     ) {
         self.weights = weights
         self.sustainedWindowSec = sustainedWindowSec
@@ -58,12 +58,15 @@ public struct ThermalScoringEngine {
         let rawScore = min(100.0, max(0.0, base + estimateLoadBoost(sample, previous: previousScore)))
         let smoothed: Double
         if let prev = previousScore {
-            let baseline = prev * (1 - smoothingFactor) + rawScore * smoothingFactor
             if rawScore > prev {
+                // Rising: keep existing rate-limited ramp
+                let baseline = prev * (1 - smoothingFactor) + rawScore * smoothingFactor
                 let maxUpStep = 5.0 + 23.0 * persistence
                 smoothed = min(baseline, prev + maxUpStep)
             } else {
-                smoothed = baseline
+                // Falling: use faster decay so fans recover promptly after workload ends
+                let decayFactor = smoothingFactor * 2.5
+                smoothed = prev * (1 - decayFactor) + rawScore * decayFactor
             }
         } else {
             smoothed = rawScore

@@ -61,6 +61,10 @@ public final class XPCClient: FanControlServiceProtocol {
         awaitValue(host.systemSleep())
     }
 
+    public func setLoggingEnabled(_ enabled: Bool) {
+        host.setLoggingEnabled(enabled)
+    }
+
     public func systemWake() -> FanControlResult {
         awaitValue(host.systemWake())
     }

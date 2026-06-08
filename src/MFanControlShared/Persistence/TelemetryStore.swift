@@ -6,12 +6,16 @@ public struct TelemetrySampleRecord: Codable, Sendable {
     public let thermalScore: Double
     public let source: String
     public let reason: String
+    public let targetRPM: Int
+    public let currentRPM: Int
 
-    public init(thermalScore: Double, source: String, reason: String, timestamp: Date = Date()) {
+    public init(thermalScore: Double, source: String, reason: String, targetRPM: Int = 0, currentRPM: Int = 0, timestamp: Date = Date()) {
         self.timestamp = timestamp
         self.thermalScore = thermalScore
         self.source = source
         self.reason = reason
+        self.targetRPM = targetRPM
+        self.currentRPM = currentRPM
     }
 }
 
@@ -237,13 +241,19 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
             return
         }
 
+        // Limit in-process SQLite page cache to ~200 KB (default is ~8 MB).
+        sqlite3_exec(db, "PRAGMA cache_size = -50;", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
+
         let schema = """
             CREATE TABLE IF NOT EXISTS telemetry_sample_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp REAL NOT NULL,
                 thermal_score REAL NOT NULL,
                 source TEXT NOT NULL,
-                reason TEXT NOT NULL
+                reason TEXT NOT NULL,
+                target_rpm INTEGER NOT NULL DEFAULT 0,
+                current_rpm INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sample_timestamp ON telemetry_sample_records(timestamp);
 
@@ -269,6 +279,8 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
         _ = schema.split(separator: ";").map(String.init).filter { !$0.isEmpty }.map {
             sqlite3_exec(db, $0 + ";", nil, nil, nil)
         }
+        sqlite3_exec(db, "ALTER TABLE telemetry_sample_records ADD COLUMN target_rpm INTEGER NOT NULL DEFAULT 0;", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE telemetry_sample_records ADD COLUMN current_rpm INTEGER NOT NULL DEFAULT 0;", nil, nil, nil)
     }
 
     private func pruneIfNeeded(on db: OpaquePointer) {
@@ -307,7 +319,7 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
     }
 
     private func insertSample(db: OpaquePointer, _ record: TelemetrySampleRecord) {
-        let insert = "INSERT INTO telemetry_sample_records (timestamp, thermal_score, source, reason) VALUES (?1, ?2, ?3, ?4);"
+        let insert = "INSERT INTO telemetry_sample_records (timestamp, thermal_score, source, reason, target_rpm, current_rpm) VALUES (?1, ?2, ?3, ?4, ?5, ?6);"
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
 
@@ -319,6 +331,8 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
         sqlite3_bind_double(statement, 2, record.thermalScore)
         sqlite3_bind_text(statement, 3, (record.source as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (record.reason as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(statement, 5, Int32(record.targetRPM))
+        sqlite3_bind_int(statement, 6, Int32(record.currentRPM))
         _ = sqlite3_step(statement)
     }
 
@@ -385,7 +399,7 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
 
     private func querySamples(db: OpaquePointer, limit: Int) -> [TelemetrySampleRecord] {
         let safeLimit = max(1, limit)
-        let select = "SELECT timestamp, thermal_score, source, reason FROM telemetry_sample_records ORDER BY timestamp DESC LIMIT ?1;"
+        let select = "SELECT timestamp, thermal_score, source, reason, target_rpm, current_rpm FROM telemetry_sample_records ORDER BY timestamp DESC LIMIT ?1;"
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
 
@@ -400,7 +414,9 @@ public final class PersistentTelemetryStore: TelemetryStoreProtocol {
             let score = sqlite3_column_double(statement, 1)
             let source = String(cString: sqlite3_column_text(statement, 2))
             let reason = String(cString: sqlite3_column_text(statement, 3))
-            result.append(TelemetrySampleRecord(thermalScore: score, source: source, reason: reason, timestamp: timestamp))
+            let targetRPM = Int(sqlite3_column_int(statement, 4))
+            let currentRPM = Int(sqlite3_column_int(statement, 5))
+            result.append(TelemetrySampleRecord(thermalScore: score, source: source, reason: reason, targetRPM: targetRPM, currentRPM: currentRPM, timestamp: timestamp))
         }
 
         return Array(result.reversed())

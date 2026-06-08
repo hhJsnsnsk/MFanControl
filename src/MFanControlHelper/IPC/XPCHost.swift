@@ -246,6 +246,13 @@ public final class XPCHost {
         }
     }
 
+    public func setLoggingEnabled(_ enabled: Bool) {
+        MFanLogger.isEnabled = enabled
+        if case .remote = transport {
+            _ = try? createRemoteProxy().setLoggingEnabled(enabled) { _, _ in }
+        }
+    }
+
     public func currentState() -> FanControlSnapshot {
         do {
             return try call(

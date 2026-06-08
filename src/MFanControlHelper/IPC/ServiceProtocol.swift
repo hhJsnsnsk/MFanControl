@@ -29,6 +29,7 @@ public enum FanControlXPCDefaults {
     func resetForUninstall(_ reply: @escaping (Data?, String?) -> Void)
     func systemWake(_ reply: @escaping (Data?, String?) -> Void)
     func systemSleep(_ reply: @escaping (Data?, String?) -> Void)
+    func setLoggingEnabled(_ enabled: Bool, _ reply: @escaping (Data?, String?) -> Void)
 }
 
 public enum FanControlXPCError: Error {

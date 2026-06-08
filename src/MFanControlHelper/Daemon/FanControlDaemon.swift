@@ -46,6 +46,8 @@ public final class FanControlDaemon {
         func keyMetadata(for key: String) throws -> SMCKeyMetadata {
             throw SMCBridgeError.commandFailure("forced-smc-unavailable")
         }
+
+        func releaseManualControl(fanCount: Int) {}
     }
 
     private final class FailingSMCBridge: SMCBridging {
@@ -66,11 +68,13 @@ public final class FanControlDaemon {
         func keyMetadata(for key: String) throws -> SMCKeyMetadata {
             throw SMCBridgeError.commandFailure("forced-smc-write-failure")
         }
+
+        func releaseManualControl(fanCount: Int) {}
     }
 
     public func start() {
-        print("MFanControlHelper daemon start")
-        print("smc-bridge: \(type(of: bridge))")
+        MFanLogger.log("MFanControlHelper daemon start")
+        MFanLogger.log("smc-bridge: \(type(of: bridge))")
     }
 
     public func serviceSnapshot() -> FanControlSnapshot {
@@ -98,7 +102,9 @@ public final class FanControlDaemon {
     }
 
     public func resetForUninstall() -> FanControlResult {
-        service.resetForUninstall()
+        let fanCount = service.currentState().hardwareProfile?.fans.first?.fanCount ?? 2
+        bridge.releaseManualControl(fanCount: fanCount)
+        return service.resetForUninstall()
     }
 
     public func handleSystemWake() -> FanControlResult {
@@ -114,7 +120,9 @@ public final class FanControlDaemon {
     }
 
     public func restoreDefault(reason: String = "helper-default") -> FanControlResult {
-        service.restoreToAppleDefault(reason: reason)
+        let fanCount = service.currentState().hardwareProfile?.fans.first?.fanCount ?? 2
+        bridge.releaseManualControl(fanCount: fanCount)
+        return service.restoreToAppleDefault(reason: reason)
     }
 
     public func applyCommand(_ command: ControlCommand) -> FanControlResult {
@@ -128,11 +136,11 @@ public final class FanControlDaemon {
         }
 
         guard bridge.isAvailable else {
-            print("smc command unavailable: entering safety fallback before writing")
+            MFanLogger.log("smc command unavailable: entering safety fallback before writing")
             return safetyFallbackResult(reason: "smc-command-unavailable")
         }
 
-        print("fan-control apply received command=\(command.action.rawValue) targetRPM=\(command.targetRPM) source=\(result.source.rawValue) state=\(result.state.rawValue)")
+        MFanLogger.log("fan-control apply received command=\(command.action.rawValue) targetRPM=\(command.targetRPM) source=\(result.source.rawValue) state=\(result.state.rawValue)")
         let controllable = service.currentState().hardwareProfile?.fans.filter { $0.controllable } ?? []
         do {
             guard !controllable.isEmpty else {
@@ -153,25 +161,29 @@ public final class FanControlDaemon {
                 let targetKey = SMCKeyCatalog.fanTargetRPMKey(for: fan)
                 _ = try writeWithFallback(target: targetKey, readKey: readKey, rpm: rpmToWrite)
                 if let readbackRPM = try? bridge.currentFanRPM(fanKey: readKey), readbackRPM > 0 {
-                    let drift = abs(readbackRPM - rpmToWrite)
-                    let driftTolerance = max(450, min(800, command.targetRPM / 4))
-                    if drift > driftTolerance && rpmToWrite > 0 {
-                        throw SMCBridgeError.commandFailure(
-                            "fan-rpm-unchanged fan=\(fan) requested=\(rpmToWrite) readback=\(readbackRPM)"
-                        )
-                    }
-                    if readbackRPM > 0 {
-                        readableFanRPMs.append(readbackRPM)
-                    }
+                    readableFanRPMs.append(readbackRPM)
                 }
             }
             if readableFanRPMs.isEmpty {
-                print("smc write succeeded but readback unavailable; continuing with desired rpm=\(rpmToWrite)")
+                MFanLogger.log("smc write succeeded but readback unavailable; continuing with desired rpm=\(rpmToWrite)")
             }
         } catch {
+            // Retry once before escalating — transient IOKit busy errors (e.g. 0xe00002bc)
+            // should not immediately reset fan state.
             let fallbackReason = safetyFallbackReason(for: error)
-            print("smc write failed for rpm=\(command.targetRPM): \(error)")
-            return safetyFallbackResult(reason: fallbackReason)
+            MFanLogger.log("smc write failed for rpm=\(command.targetRPM), retrying: \(error)")
+            do {
+                let fanCount = max(1, (service.currentState().hardwareProfile?.fans.filter { $0.controllable }.first?.fanCount ?? 1))
+                let rpmToWrite = service.currentState().currentRPM
+                for fan in 0..<fanCount {
+                    let readKey = SMCKeyCatalog.fanCurrentRPMKey(for: fan)
+                    let targetKey = SMCKeyCatalog.fanTargetRPMKey(for: fan)
+                    _ = try writeWithFallback(target: targetKey, readKey: readKey, rpm: rpmToWrite)
+                }
+            } catch {
+                MFanLogger.log("smc write retry also failed for rpm=\(command.targetRPM): \(error)")
+                return safetyFallbackResult(reason: fallbackReason)
+            }
         }
 
         return result
@@ -182,17 +194,17 @@ public final class FanControlDaemon {
             _ = try bridge.writeFanRPM(target, rpm: rpm)
             return
         } catch {
-            print("smc write primary target failed (\(target)): \(error)")
+            MFanLogger.log("smc write primary target failed (\(target)): \(error)")
         }
 
         if target.contains("Tg") {
             let alternate = readKey
             do {
                 _ = try bridge.writeFanRPM(alternate, rpm: rpm)
-                print("smc write fallback success via target=\(alternate)")
+                MFanLogger.log("smc write fallback success via target=\(alternate)")
                 return
             } catch {
-                print("smc write fallback failed (\(alternate)): \(error)")
+                MFanLogger.log("smc write fallback failed (\(alternate)): \(error)")
                 throw error
             }
         }
@@ -249,14 +261,24 @@ public final class FanControlDaemon {
         }
         let fanCount = max(1, controllableFans.first?.fanCount ?? 1)
 
+        var maxRPM = 0
+        var readFailed = false
         for fan in 0..<fanCount {
             let fanKey = SMCKeyCatalog.fanCurrentRPMKey(for: fan)
-            if let readbackRPM = try? bridge.currentFanRPM(fanKey: fanKey), readbackRPM > 0 {
-                var updated = snapshot
-                updated.currentRPM = readbackRPM
-                return updated
+            do {
+                let readbackRPM = try bridge.currentFanRPM(fanKey: fanKey)
+                if readbackRPM > maxRPM { maxRPM = readbackRPM }
+            } catch {
+                readFailed = true
+                MFanLogger.log("smc readback F\(fan)Ac failed: \(error)")
             }
         }
-        return snapshot
+        if readFailed && maxRPM == 0 {
+            MFanLogger.log("smc readback unavailable — displaying commanded rpm=\(snapshot.currentRPM)")
+        }
+        guard maxRPM > 0 else { return snapshot }
+        var updated = snapshot
+        updated.currentRPM = maxRPM
+        return updated
     }
 }

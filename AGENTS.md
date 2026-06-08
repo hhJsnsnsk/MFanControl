@@ -50,7 +50,26 @@
 ## 构建入口（当前）
 
 - 默认使用 `swift package` 进行阶段性骨架编译：`swift build`、`swift test`。  
-- 后续接入 Xcode 工程时，保持 `AGENTS.md` 与 `Package.swift` 的模块边界不变，逐步映射到 target。  
+- 后续接入 Xcode 工程时，保持 `AGENTS.md` 与`Package.swift` 的模块边界不变，逐步映射到 target。  
+
+## 本地开发安装流程
+
+**正确顺序**（错误顺序会导致旧二进制被部署）：
+
+```bash
+# 一键安装（推荐）
+sudo ./scripts/dev-install.sh
+
+# 等价的手动步骤：
+swift build -c release                                        # 1. 先构建
+sudo ./scripts/install-launchd.sh --no-build --skip-sign     # 2. 再安装
+```
+
+**关键说明：**
+- 必须先 `swift build -c release`，再运行 install 脚本；若直接用 `--no-build` 但没有先 build，会部署旧的 `.build/release` 二进制。
+- 本机开发证书链不完整，`codesign` 会报 `errSecInternalComponent`，必须加 `--skip-sign`；正式发布走 `package-release.sh`。
+- `xcodebuild` 的产物在 DerivedData，**不是** `.build/release`，不能替代 `swift build`。
+- 安装后用 `MFanControlCLI status` 验证新版本是否生效。
 
 ## 风险与审计点
 
