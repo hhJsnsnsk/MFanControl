@@ -68,6 +68,11 @@ public final class FanControlXPCExportedObject: NSObject, FanControlXPCServicePr
         replyEncoded(daemon.handleSystemSleep(), reply)
     }
 
+    public func setLoggingEnabled(_ enabled: Bool, _ reply: @escaping (Data?, String?) -> Void) {
+        MFanLogger.isEnabled = enabled
+        reply(nil, nil)
+    }
+
     private func replyEncoded<T: Encodable>(_ value: T, _ reply: @escaping (Data?, String?) -> Void) {
         do {
             let payload = try FanControlXPCSerialization.encode(value)

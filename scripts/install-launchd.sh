@@ -178,6 +178,39 @@ _sudo cp "$CLI_BIN_SRC" "$CLI_BIN_DST"
 _sudo cp "$APP_LAUNCHER_SRC" "$APP_LAUNCHER_DST"
 _sudo chmod 755 "$APP_BIN_DST" "$CLI_BIN_DST" "$APP_LAUNCHER_DST"
 
+echo "Installing MFanControl.app to /Applications..."
+APP_BUNDLE="/Applications/MFanControl.app"
+APP_BUNDLE_MACOS="$APP_BUNDLE/Contents/MacOS"
+APP_BUNDLE_RESOURCES="$APP_BUNDLE/Contents/Resources"
+APP_BUNDLE_INFO="$APP_BUNDLE/Contents/Info.plist"
+APP_VERSION="$(git -C "$PROJECT_ROOT" describe --tags --always --abbrev=8 2>/dev/null || echo "1.0")"
+_sudo rm -rf "$APP_BUNDLE"
+_sudo mkdir -p "$APP_BUNDLE_MACOS" "$APP_BUNDLE_RESOURCES"
+_sudo cp "$APP_BIN_SRC" "$APP_BUNDLE_MACOS/MFanControlApp"
+_sudo chmod 755 "$APP_BUNDLE_MACOS/MFanControlApp"
+if [[ -d "$BUILD_DIR/MFanControl_MFanControlApp.bundle" ]]; then
+  _sudo cp -R "$BUILD_DIR/MFanControl_MFanControlApp.bundle" "$APP_BUNDLE_RESOURCES/"
+fi
+_sudo tee "$APP_BUNDLE_INFO" > /dev/null <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>MFanControl</string>
+  <key>CFBundleExecutable</key><string>MFanControlApp</string>
+  <key>CFBundleIdentifier</key><string>com.starrysky.MFanControlApp</string>
+  <key>CFBundleName</key><string>MFanControl</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
+  <key>CFBundleVersion</key><string>${APP_VERSION}</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+
 echo "Installing helper launch daemon..."
 _sudo mkdir -p "$HELPER_LAUNCHD_DIR"
 _sudo cp "$HELPER_PLIST_SRC" "$HELPER_LAUNCHD_PLIST"
@@ -189,6 +222,7 @@ _sudo mkdir -p "$APP_LAUNCHAGENT_DIR"
 _sudo cp "$APP_PLIST_SRC" "$APP_LAUNCHAGENT_PLIST"
 
 echo "Stopping existing services..."
+"$CLI_BIN_DST" force-default >/dev/null 2>&1 || true
 run_as_user launchctl bootout gui/"$TARGET_UID" "$APP_LAUNCHAGENT_PLIST" >/dev/null 2>&1 || true
 run_as_user pkill -x MFanControlApp >/dev/null 2>&1 || true
 _sudo launchctl bootout system "$HELPER_LAUNCHD_PLIST" >/dev/null 2>&1 || true

@@ -11,6 +11,7 @@ struct MenuBarPopoverView: View {
     let onRestoreDefault: () -> Void
     let onRefresh: () -> Void
     let onClose: () -> Void
+    let onToggleLogging: () -> Void
 
     private let panelWidth: CGFloat = 424
     private let panelHeight: CGFloat = 720
@@ -138,7 +139,7 @@ struct MenuBarPopoverView: View {
 
                 InfoTile(title: "风扇", icon: "fan.fill", tint: .blue) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(model.currentRPM) rpm")
+                        Text("\(model.currentRPM) rpm（命令值）")
                             .font(.system(size: 18, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(.primary)
@@ -366,24 +367,47 @@ struct MenuBarPopoverView: View {
     }
 
     private var actionSection: some View {
-        HStack(spacing: 10) {
-            Button {
-                onRestoreDefault()
-            } label: {
-                Label("恢复默认", systemImage: "arrow.uturn.backward.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.red)
-            .disabled(!model.canRestoreDefault)
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Button {
+                    onRestoreDefault()
+                } label: {
+                    Label("恢复默认", systemImage: "arrow.uturn.backward.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(!model.canRestoreDefault)
 
-            Button {
-                onRefresh()
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
+                Button {
+                    onRefresh()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
+
+            HStack(spacing: 10) {
+                Button {
+                    onToggleLogging()
+                } label: {
+                    Label(model.loggingEnabled ? "日志：开" : "日志：关",
+                          systemImage: model.loggingEnabled ? "doc.text.fill" : "doc.text")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(model.loggingEnabled ? .orange : .secondary)
+
+                Button {
+                    NSApp.terminate(nil)
+                } label: {
+                    Label("退出", systemImage: "power")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+            }
         }
     }
 

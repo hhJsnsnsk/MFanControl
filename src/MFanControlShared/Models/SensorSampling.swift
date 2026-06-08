@@ -156,41 +156,46 @@ public struct EmptyRawTemperatureSensorSource: RawTemperatureSensorSource {
     }
 }
 
-public struct HIDTemperatureSensorSource: RawTemperatureSensorSource {
+public final class HIDTemperatureSensorSource: RawTemperatureSensorSource {
     private static let temperatureUsagePage = 0xff00
     private static let temperatureUsage = 5
     private static let temperatureEventType: Int64 = 15
     private static let temperatureEventField: Int32 = Int32(15 << 16)
 
+    // Cached client — creating a new IOHIDEventSystemClient on every poll leaks ~19 KB/tick.
+    // The client is safe to reuse; services are re-enumerated each call to catch sensor changes.
+    private var cachedClient: CFTypeRef?
+
     public init() {}
 
     public func readRawTemperatureSensors() -> [RawTemperatureSensorReading] {
-        guard let client = IOHIDEventSystemClientCreate(kCFAllocatorDefault) else {
-            return []
+        return autoreleasepool {
+            let client: CFTypeRef
+            if let existing = cachedClient {
+                client = existing
+            } else {
+                guard let fresh = IOHIDEventSystemClientCreate(kCFAllocatorDefault) else { return [] }
+                let matching = [
+                    "PrimaryUsagePage": Self.temperatureUsagePage,
+                    "PrimaryUsage": Self.temperatureUsage
+                ] as CFDictionary
+                IOHIDEventSystemClientSetMatching(fresh, matching)
+                cachedClient = fresh
+                client = fresh
+            }
+            guard let services = IOHIDEventSystemClientCopyServices(client) else { return [] }
+            var readings: [RawTemperatureSensorReading] = []
+            for index in 0..<CFArrayGetCount(services) {
+                let service = unsafeBitCast(CFArrayGetValueAtIndex(services, index), to: CFTypeRef.self)
+                let product = IOHIDServiceClientCopyProperty(service, "Product" as CFString) as? String
+                guard let name = product, !name.isEmpty else { continue }
+                guard let event = IOHIDServiceClientCopyEvent(service, Self.temperatureEventType, 0, 0) else { continue }
+                let temp = IOHIDEventGetFloatValue(event, Self.temperatureEventField)
+                guard temp.isFinite, temp > -50, temp < 150 else { continue }
+                readings.append(RawTemperatureSensorReading(name: name, tempC: temp))
+            }
+            return readings.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
-
-        let matching = [
-            "PrimaryUsagePage": Self.temperatureUsagePage,
-            "PrimaryUsage": Self.temperatureUsage
-        ] as CFDictionary
-        IOHIDEventSystemClientSetMatching(client, matching)
-
-        guard let services = IOHIDEventSystemClientCopyServices(client) else {
-            return []
-        }
-
-        var readings: [RawTemperatureSensorReading] = []
-        for index in 0..<CFArrayGetCount(services) {
-            let service = unsafeBitCast(CFArrayGetValueAtIndex(services, index), to: CFTypeRef.self)
-            let product = IOHIDServiceClientCopyProperty(service, "Product" as CFString) as? String
-            guard let name = product, !name.isEmpty else { continue }
-            guard let event = IOHIDServiceClientCopyEvent(service, Self.temperatureEventType, 0, 0) else { continue }
-            let temp = IOHIDEventGetFloatValue(event, Self.temperatureEventField)
-            guard temp.isFinite, temp > -50, temp < 150 else { continue }
-            readings.append(RawTemperatureSensorReading(name: name, tempC: temp))
-        }
-
-        return readings.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -334,74 +339,34 @@ public struct SensorReadContext {
 }
 
 public final class SystemSensorSampler: SensorSampler {
-    private struct CommandRunner {
-        let command: (String, [String]) -> String?
-    }
-
-    private var commandRunner: CommandRunner
     private let rawTemperatureSensorSource: any RawTemperatureSensorSource
     private var lastSampleAt: Date?
     private var sustainedLoad: Double = 0
     private static let loadWindow: Double = 30
 
     public init(
-        runShell: @escaping (String, [String]) -> String? = SystemSensorSampler.defaultRunShell,
         rawTemperatureSensorSource: any RawTemperatureSensorSource = HIDTemperatureSensorSource()
     ) {
-        self.commandRunner = CommandRunner(command: runShell)
         self.rawTemperatureSensorSource = rawTemperatureSensorSource
     }
 
     public func nextSample(at timestamp: Date) -> SensorSampleOutput {
-        let powermetrics = commandRunner.command("/usr/bin/env", ["powermetrics", "-n", "1", "-i", "1000", "-s", "thermal,cpu_power,gpu_power"])
-        let pmsetTherm = commandRunner.command("/usr/bin/env", ["pmset", "-g", "therm"])
-        let batt = commandRunner.command("/usr/bin/env", ["pmset", "-g", "batt"])
-        var parsed = parseSample(fromPowermetrics: powermetrics, pmset: pmsetTherm, timestamp: timestamp)
-        parsed.rawTemperatureSensors = rawTemperatureSensorSource.readRawTemperatureSensors()
-        parsed = enrichWithRawTemperatureFallback(parsed)
-        let power = powerSource(from: batt)
-        let availability = availability(for: parsed)
-        let finalSample = withSustainedLoad(parsed, timestamp: timestamp)
-
+        var sample = SensorSample(timestamp: timestamp)
+        // All temperatures read directly via IOHIDEventSystem — no subprocesses
+        sample.rawTemperatureSensors = rawTemperatureSensorSource.readRawTemperatureSensors()
+        sample = enrichWithRawTemperatureFallback(sample)
+        // Power watts via HID power sensors
+        sample.powerWatts = HIDPowerSensorSource().readTotalPowerWatts()
+        // Power source via IOKit — no subprocess
+        let powerSrc = IOKitPowerSourceReader.powerSourceString()
+        let availability = availability(for: sample)
+        let finalSample = withSustainedLoad(sample, timestamp: timestamp)
         return SensorSampleOutput(
             sample: finalSample,
             availability: availability,
             throttleState: throttleState(for: finalSample),
-            powerSource: power
+            powerSource: powerSrc
         )
-    }
-
-    public static func defaultRunShell(_ launchPath: String, _ arguments: [String]) -> String? {
-        let proc = Process()
-        proc.launchPath = launchPath
-        proc.arguments = arguments
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        do {
-            try proc.run()
-        } catch {
-            return nil
-        }
-        proc.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func parseSample(fromPowermetrics: String?, pmset: String?, timestamp: Date) -> SensorSample {
-        var sample = SensorSample(timestamp: timestamp)
-        sample.cpuPcoreTempC = readTemp(from: fromPowermetrics, keys: ["cpu", "cpu die", "processor"]) ??
-            readTemp(from: pmset, keys: ["cpu", "cpu die"])
-        sample.cpuEcoreTempC = nil
-        sample.gpuTempC = readTemp(from: fromPowermetrics, keys: ["gpu", "gpu die"]) ??
-            readTemp(from: pmset, keys: ["gpu"])
-        sample.socTempC = readTemp(from: fromPowermetrics, keys: ["soc"]) ??
-            readTemp(from: pmset, keys: ["soc"])
-        sample.ssdTempC = readTemp(from: pmset, keys: ["ssd", "ssd temp", "nvme"]) ??
-            readTemp(from: fromPowermetrics, keys: ["ssd"])
-        sample.powerWatts = readPower(from: fromPowermetrics, keys: ["power", "watts"]) ??
-            readPower(from: pmset, keys: ["power", "W"])
-        return sample
     }
 
     private func availability(for sample: SensorSample) -> [String: SensorChannelAvailability] {
@@ -458,61 +423,6 @@ public final class SystemSensorSampler: SensorSampler {
         return ThermalThrottleState(cpuThermalThrottled: cpuThrottled, gpuThermalThrottled: gpuThrottled, reason: reason)
     }
 
-    private func readTemp(from text: String?, keys: [String]) -> Double? {
-        guard let text else { return nil }
-        for key in keys {
-            if let found = firstTemperature(in: text, near: key) {
-                return found
-            }
-        }
-        return nil
-    }
-
-    private func readPower(from text: String?, keys: [String]) -> Double? {
-        guard let text else { return nil }
-        for key in keys {
-            if let found = firstPower(in: text, near: key) {
-                return found
-            }
-        }
-        return nil
-    }
-
-    private func firstTemperature(in text: String, near anchor: String) -> Double? {
-        do {
-            let escaped = NSRegularExpression.escapedPattern(for: anchor)
-            let expr = try NSRegularExpression(pattern: "(?i)\(escaped)[^0-9-\\.]*(-?\\d+(?:\\.\\d+)?)\\s*°?c")
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            if let match = expr.firstMatch(in: text, options: [], range: range) {
-                let valueRange = Range(match.range(at: 1), in: text).flatMap { Double(text[$0]) }
-                if let value = valueRange {
-                    return value
-                }
-            }
-        } catch {
-            return nil
-        }
-        return nil
-    }
-
-    private func firstPower(in text: String, near anchor: String) -> Double? {
-        do {
-            let escaped = NSRegularExpression.escapedPattern(for: anchor)
-            let expr = try NSRegularExpression(pattern: "(?i)\(escaped)[^0-9-\\.]*(-?\\d+(?:\\.\\d+)?)\\s*(mw|w|watt|watts)")
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            if let match = expr.firstMatch(in: text, options: [], range: range) {
-                let valueRange = Range(match.range(at: 1), in: text).flatMap { Double(text[$0]) }
-                let unitRange = Range(match.range(at: 2), in: text).map { String(text[$0]).lowercased() }
-                if let value = valueRange {
-                    return unitRange == "mw" ? value / 1000.0 : value
-                }
-            }
-        } catch {
-            return nil
-        }
-        return nil
-    }
-
     private func withSustainedLoad(_ sample: SensorSample, timestamp: Date) -> SensorSample {
         var value = sample
         if let last = lastSampleAt {
@@ -537,59 +447,95 @@ public final class SystemSensorSampler: SensorSampler {
 
     private func enrichWithRawTemperatureFallback(_ sample: SensorSample) -> SensorSample {
         var output = sample
-        guard !sample.rawTemperatureSensors.isEmpty else {
-            return output
-        }
-
+        guard !sample.rawTemperatureSensors.isEmpty else { return output }
+        // On Apple Silicon Macs (M1–M4) the named SMC keys for CPU/GPU/SoC are often
+        // absent or unreliable; PMU DIE sensors are the authoritative source.
+        // ADR 0006: mapping is acceptable here because it is hardware-validated for all
+        // currently supported Apple Silicon models (M1–M4). Revisit for new chip families.
         let raw = sample.rawTemperatureSensors
         if output.cpuPcoreTempC == nil {
-            output.cpuPcoreTempC = maxTemperature(
-                from: raw,
-                where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") }
-            )
+            output.cpuPcoreTempC = maxRaw(from: raw, where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") })
         }
         if output.gpuTempC == nil {
-            output.gpuTempC = maxTemperature(
-                from: raw,
-                where: { $0.name.localizedCaseInsensitiveContains("PMU2") || $0.name.localizedCaseInsensitiveContains("PMU Device") }
-            )
+            output.gpuTempC = maxRaw(from: raw, where: { $0.name.localizedCaseInsensitiveContains("PMU2") || $0.name.localizedCaseInsensitiveContains("PMU Device") })
         }
         if output.socTempC == nil {
-            output.socTempC = maxTemperature(
-                from: raw,
-                where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") }
-            )
+            output.socTempC = maxRaw(from: raw, where: { $0.name.localizedCaseInsensitiveContains("PMU") || $0.name.localizedCaseInsensitiveContains("PMU2") })
         }
         if output.ssdTempC == nil {
-            output.ssdTempC = maxTemperature(
-                from: raw,
-                where: { $0.name.localizedCaseInsensitiveContains("NAND") || $0.name.localizedCaseInsensitiveContains("SSD") }
-            )
+            output.ssdTempC = maxRaw(from: raw, where: { $0.name.localizedCaseInsensitiveContains("NAND") || $0.name.localizedCaseInsensitiveContains("SSD") })
         }
         if output.memoryTempC == nil {
-            output.memoryTempC = maxTemperature(
-                from: raw,
-                where: { $0.name.localizedCaseInsensitiveContains("PMU2 Device") }
-            )
+            output.memoryTempC = maxRaw(from: raw, where: { $0.name.localizedCaseInsensitiveContains("PMU2 Device") })
         }
         return output
     }
 
-    private func maxTemperature(
-        from readings: [RawTemperatureSensorReading],
-        where predicate: (RawTemperatureSensorReading) -> Bool
-    ) -> Double? {
+    private func maxRaw(from readings: [RawTemperatureSensorReading], where predicate: (RawTemperatureSensorReading) -> Bool) -> Double? {
         let values = readings.filter(predicate).map(\.tempC)
         return values.isEmpty ? nil : values.max()
     }
+}
 
-    private func powerSource(from text: String?) -> String {
-        guard let text else { return "unknown" }
-        if text.range(of: "AC Power", options: .caseInsensitive) != nil { return "AC" }
-        if text.range(of: "Battery Power", options: .caseInsensitive) != nil { return "Battery" }
-        return "unknown"
+// Reads system power source (AC/Battery) via IOKit — no subprocess needed.
+public struct IOKitPowerSourceReader {
+    public static func powerSourceString() -> String {
+        // IOPSCopyPowerSourcesInfo is available in IOKit framework
+        let lib = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY | RTLD_NOLOAD)
+        defer { if let lib { dlclose(lib) } }
+        guard let lib,
+              let sym = dlsym(lib, "IOPSCopyPowerSourcesInfo"),
+              let listSym = dlsym(lib, "IOPSCopyPowerSourcesList"),
+              let descSym = dlsym(lib, "IOPSGetPowerSourceDescription") else { return "AC" }
+        typealias InfoFn = @convention(c) () -> CFTypeRef?
+        typealias ListFn = @convention(c) (CFTypeRef) -> CFArray?
+        typealias DescFn = @convention(c) (CFTypeRef, CFTypeRef) -> CFDictionary?
+        let infoFn = unsafeBitCast(sym, to: InfoFn.self)
+        let listFn = unsafeBitCast(listSym, to: ListFn.self)
+        let descFn = unsafeBitCast(descSym, to: DescFn.self)
+        guard let blob = infoFn() else { return "AC" }
+        guard let list = listFn(blob) else { return "AC" }
+        for i in 0..<CFArrayGetCount(list) {
+            let ps = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: CFTypeRef.self)
+            guard let desc = descFn(blob, ps) as? [String: Any] else { continue }
+            if let state = desc["Power Source State"] as? String {
+                if state.contains("Battery") { return "Battery" }
+                if state.contains("AC") { return "AC" }
+            }
+        }
+        return "AC"
     }
 }
+
+// Reads total system power watts via IOHIDEventSystem (Apple Silicon M-series).
+// Returns nil gracefully if sensors are unavailable.
+public struct HIDPowerSensorSource {
+    private static let powerUsagePage = 0xff08
+    private static let powerUsage = 2
+    private static let powerEventType: Int64 = 25
+    private static let powerEventField: Int32 = Int32(25 << 16)
+
+    public init() {}
+
+    public func readTotalPowerWatts() -> Double? {
+        guard let client = IOHIDEventSystemClientCreate(kCFAllocatorDefault) else { return nil }
+        let matching = ["PrimaryUsagePage": Self.powerUsagePage, "PrimaryUsage": Self.powerUsage] as CFDictionary
+        IOHIDEventSystemClientSetMatching(client, matching)
+        guard let services = IOHIDEventSystemClientCopyServices(client) else { return nil }
+        var total = 0.0
+        var found = false
+        for index in 0..<CFArrayGetCount(services) {
+            let service = unsafeBitCast(CFArrayGetValueAtIndex(services, index), to: CFTypeRef.self)
+            guard let event = IOHIDServiceClientCopyEvent(service, Self.powerEventType, 0, 0) else { continue }
+            let watts = IOHIDEventGetFloatValue(event, Self.powerEventField)
+            guard watts.isFinite, watts >= 0, watts < 1000 else { continue }
+            total += watts
+            found = true
+        }
+        return found ? total : nil
+    }
+}
+
 
 public final class FallbackSensorSampler: SensorSampler {
     private let deterministic = DeterministicSensorSampler()

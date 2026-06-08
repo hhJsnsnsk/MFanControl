@@ -30,6 +30,7 @@ public struct MenuBarViewModel {
     var recentEvents: [TelemetryEventRecord] = []
     var configSummary: String = "未读取配置"
     var stateReadable: String = "待机"
+    var loggingEnabled: Bool = false
 }
 
 #if canImport(AppKit)
@@ -140,6 +141,7 @@ public final class MenuBarController {
     }
 
     private func updatePopoverContent(with model: MenuBarViewModel) {
+        guard popover.isShown || hostingController == nil else { return }
         let content = MenuBarPopoverView(
             model: model,
             onSelectMode: { [weak self] mode in
@@ -155,6 +157,10 @@ public final class MenuBarController {
             },
             onClose: { [weak self] in
                 self?.closePopover()
+            },
+            onToggleLogging: { [weak self] in
+                self?.coordinator.toggleLogging()
+                self?.refresh()
             }
         )
 
@@ -233,6 +239,7 @@ public final class MenuBarController {
             canControl: model.canControl
         )
         model.controlIssue = self.controlIssue(from: command?.reason ?? snapshot.reason)
+        model.loggingEnabled = coordinator.loggingEnabled
         return model
     }
 

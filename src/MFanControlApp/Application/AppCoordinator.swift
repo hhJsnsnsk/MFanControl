@@ -29,6 +29,7 @@ public final class AppCoordinator {
     public private(set) var latestSample: SensorSample?
     public private(set) var lastCommand: ControlCommand?
     public private(set) var hardwareProfile: HardwareProfile = HardwareDiscovery.detect()
+    public private(set) var loggingEnabled: Bool = false
 
     private var stateMachine: ControlStateMachine
     private let engine: ThermalEngine
@@ -39,8 +40,10 @@ public final class AppCoordinator {
     private var previousScore: Double?
     private var lastDecision = "init"
     private var lastApplyAt: Date = .distantPast
+    private var lastHardwareRefreshAt: Date = .distantPast
     private var lastRapidRiseSample: (temp: Double, at: Date)?
     private let minApplyInterval: TimeInterval = 3.0
+    private let hardwareRefreshInterval: TimeInterval = 60.0
     private let rapidRiseTemperatureDelta: Double = 7.0
     private let rapidRiseWindowSec: TimeInterval = 4.0
     private let runningProcessScanner: any RunningProcessSource
@@ -100,6 +103,12 @@ public final class AppCoordinator {
         _ = stateMachine.apply(event: .manualDefault)
         state = .manualDefault
         stateSource = .userManual
+    }
+
+    public func toggleLogging() {
+        loggingEnabled.toggle()
+        MFanLogger.isEnabled = loggingEnabled
+        (xpc as? XPCClient)?.setLoggingEnabled(loggingEnabled)
     }
 
     public func setMode(_ newMode: ThermalPolicy.Mode) {
@@ -196,12 +205,18 @@ public final class AppCoordinator {
         latestScore = score
         let config = exportConfig()
 
-        let discoveredProfile = xpc.discoverHardwareProfile()
+        // Refresh hardware profile at most once per minute — hardware never changes at runtime
+        let now2 = Date()
+        if now2.timeIntervalSince(lastHardwareRefreshAt) >= hardwareRefreshInterval {
+            hardwareProfile = xpc.discoverHardwareProfile()
+            lastHardwareRefreshAt = now2
+        }
+        let discoveredProfile = hardwareProfile
         _ = stateMachine.apply(event: .discovered, hardwareProfile: discoveredProfile)
         state = stateMachine.state
         stateSource = stateMachine.source
-        activeRPM = xpc.currentState().currentRPM
-        snapshot = xpc.currentState()
+        activeRPM = snapshotBeforeBoost.currentRPM
+        snapshot = snapshotBeforeBoost
 
         if state == .idle || state == .safetyFallback {
             return ControlCommand(action: .restoreDefault, targetRPM: 0, reason: "no-control")
@@ -225,7 +240,8 @@ public final class AppCoordinator {
             customCurve: mode == .customCurve ? config.customCurve : nil,
             upgradeConservativeMode: config.upgradeConservativeMode
         )
-        let adjustedCmd = applyRapidHeatSafety(cmd: cmd, sample: sample, maxRPM: maxRPM)
+        let policyMaxRPM = ThermalPolicy.defaults(for: mode).targetMaxRPM
+        let adjustedCmd = applyRapidHeatSafety(cmd: cmd, sample: sample, hardwareMaxRPM: maxRPM, policyMaxRPM: policyMaxRPM)
         if shouldPauseControl(using: snapshot, sample: sample) {
             lastDecision = "state=\(state.rawValue);safety-pause"
             _ = xpc.restoreToAppleDefault(reason: "sensor-critical")
@@ -331,33 +347,36 @@ public final class AppCoordinator {
         )
     }
 
-    private func applyRapidHeatSafety(cmd: ControlCommand, sample: SensorSample, maxRPM: Int) -> ControlCommand {
+    private func applyRapidHeatSafety(cmd: ControlCommand, sample: SensorSample, hardwareMaxRPM: Int, policyMaxRPM: Int) -> ControlCommand {
         var adjusted = cmd
         let baseReason = adjusted.reason ?? "policy"
         let hottest = [sample.cpuPcoreTempC, sample.cpuEcoreTempC, sample.gpuTempC, sample.socTempC, sample.ssdTempC, sample.batteryTempC, sample.memoryTempC].compactMap { $0 }.max() ?? 0
         let now = sample.timestamp
+        // Use policyMaxRPM for non-critical cases so quiet/balanced modes are not
+        // pushed beyond their declared ceiling by transient temperature spikes.
+        // Only genuine critical overheating (≥90°C) bypasses the policy cap.
         if let previous = lastRapidRiseSample,
             let interval = now.timeIntervalSince(previous.at) >= 0 ? now.timeIntervalSince(previous.at) : nil,
             interval <= rapidRiseWindowSec,
             hottest - previous.temp >= rapidRiseTemperatureDelta
         {
-            let riseTarget = max(adjusted.targetRPM, Int(Double(maxRPM) * 0.72))
-            adjusted.targetRPM = min(maxRPM, riseTarget)
+            let riseTarget = max(adjusted.targetRPM, Int(Double(policyMaxRPM) * 0.72))
+            adjusted.targetRPM = min(policyMaxRPM, riseTarget)
             adjusted.rampStep = max(adjusted.rampStep ?? 300, 600)
             adjusted.reason = "\(baseReason);heat-emergency:rapid-rise"
         }
         if hottest >= 90 {
-            adjusted.targetRPM = maxRPM
+            adjusted.targetRPM = hardwareMaxRPM
             adjusted.rampStep = max(adjusted.rampStep ?? 300, 900)
             adjusted.reason = "\(baseReason);heat-emergency:max"
         } else if hottest >= 84 {
-            let urgentTarget = max(adjusted.targetRPM, Int(Double(maxRPM) * 0.85))
-            adjusted.targetRPM = min(maxRPM, urgentTarget)
+            let urgentTarget = max(adjusted.targetRPM, Int(Double(policyMaxRPM) * 0.85))
+            adjusted.targetRPM = min(policyMaxRPM, urgentTarget)
             adjusted.rampStep = max(adjusted.rampStep ?? 300, 700)
             adjusted.reason = "\(baseReason);heat-emergency:high"
         } else if hottest >= 78 {
-            let aheadTarget = max(adjusted.targetRPM, Int(Double(maxRPM) * 0.72))
-            adjusted.targetRPM = min(maxRPM, aheadTarget)
+            let aheadTarget = max(adjusted.targetRPM, Int(Double(policyMaxRPM) * 0.72))
+            adjusted.targetRPM = min(policyMaxRPM, aheadTarget)
             adjusted.rampStep = max(adjusted.rampStep ?? 300, 500)
             adjusted.reason = "\(baseReason);heat-emergency:pre"
         }

@@ -33,11 +33,12 @@ public final class ThermalEngine {
             target = Int(Double(target) * 0.92)
         }
 
-        let clampedTarget = min(constraints.max, max(constraints.min, target))
+        let policyMax = profile == .customCurve ? constraints.max : min(constraints.max, policy.targetMaxRPM)
+        let clampedTarget = min(policyMax, max(constraints.min, target))
         let delta = clampedTarget - currentRPM
         let step = min(abs(delta), constraints.rampStep)
         let applied = currentRPM + (delta >= 0 ? step : -step)
-        let safeTarget = max(constraints.min, min(constraints.max, applied))
+        let safeTarget = max(constraints.min, min(policyMax, applied))
         let safetyReason = score.band == .safety ? "safety-zone" : "\(score.band)"
 
         return ControlCommand(

@@ -49,24 +49,24 @@ public struct ThermalPolicy: Codable, Sendable {
         case .quiet:
             return .init(name: "quiet", mode: .quiet, targetMinRPM: 1200, targetMaxRPM: 3200, targetRPM: 1400, thermalScoreBias: 0, customCurve: [
                 .init(score: 0, rpm: 1200),
-                .init(score: 30, rpm: 1400),
-                .init(score: 60, rpm: 2100),
-                .init(score: 80, rpm: 3000),
-                .init(score: 100, rpm: 3900)
+                .init(score: 50, rpm: 1200),
+                .init(score: 65, rpm: 1800),
+                .init(score: 80, rpm: 2500),
+                .init(score: 100, rpm: 3200)
             ])
         case .balanced:
             return .init(name: "balanced", mode: .balanced, targetMinRPM: 1400, targetMaxRPM: 4300, targetRPM: 1800, thermalScoreBias: 0, customCurve: [
                 .init(score: 0, rpm: 1400),
-                .init(score: 30, rpm: 1600),
-                .init(score: 60, rpm: 2600),
-                .init(score: 80, rpm: 3600),
-                .init(score: 100, rpm: 5000)
+                .init(score: 45, rpm: 1400),
+                .init(score: 60, rpm: 2200),
+                .init(score: 75, rpm: 3200),
+                .init(score: 100, rpm: 4300)
             ])
         case .performance:
             return .init(name: "performance", mode: .performance, targetMinRPM: 1600, targetMaxRPM: 6200, targetRPM: 2400, thermalScoreBias: 10, customCurve: [
                 .init(score: 0, rpm: 1600),
-                .init(score: 30, rpm: 1900),
-                .init(score: 60, rpm: 3100),
+                .init(score: 40, rpm: 1600),
+                .init(score: 60, rpm: 2800),
                 .init(score: 80, rpm: 4800),
                 .init(score: 100, rpm: 6200)
             ])

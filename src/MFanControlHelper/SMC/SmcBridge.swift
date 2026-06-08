@@ -1,4 +1,5 @@
 import Foundation
+import MFanControlShared
 
 enum SMCBridgeError: Error {
     case unsupported
@@ -25,6 +26,7 @@ protocol SMCBridging {
     func writeFanRPM(_ fanKey: String, rpm: Int) throws -> Bool
     func currentFanRPM(fanKey: String) throws -> Int
     func keyMetadata(for key: String) throws -> SMCKeyMetadata
+    func releaseManualControl(fanCount: Int)
 }
 
 protocol SMCFanWriteBackend {
@@ -76,6 +78,10 @@ final class PlaceholderSMCBridge: SMCBridging {
         currentRPM = bytes.first.map { Int($0) } ?? currentRPM
     }
 
+    func releaseManualControl(fanCount: Int) {
+        currentRPM = 0
+    }
+
     private var currentRPM = 0
 }
 
@@ -95,11 +101,11 @@ final class SystemSMCBridge: SMCBridging {
     init() {
         if let iokitBridge = try? IOKitSMCBridge() {
             self.access = .iokit(iokitBridge)
-            print("smc-access: iokit")
+            MFanLogger.log("smc-access: iokit")
             return
         }
         self.access = .unavailable
-        print("smc-access: unavailable")
+        MFanLogger.log("smc-access: unavailable")
     }
 
     func readSensor(_ key: String) throws -> Double? {
@@ -143,6 +149,14 @@ final class SystemSMCBridge: SMCBridging {
             throw SMCBridgeError.commandFailure("smc-bridge-missing")
         }
         return try bridge.keyMetadata(for: key)
+    }
+
+    func releaseManualControl(fanCount: Int) {
+        guard case .iokit(let bridge) = access else { return }
+        for fan in 0..<max(1, fanCount) {
+            bridge.disableManualMode(for: fan)
+        }
+        MFanLogger.log("smc manual control released for \(fanCount) fans")
     }
 
     private static func fanTargetRPMWriteKey(for fanKey: String) -> String {
@@ -193,11 +207,11 @@ final class SystemSMCBridge: SMCBridging {
                 } catch {
                     // Some systems expose writable target fan keys without manual mode flip.
                     // Keep best-effort behavior for compatibility with such devices.
-                    print("smc write: manual mode enable skipped for fanIndex=\(fanIndex): \(error)")
+                    MFanLogger.log("smc write: manual mode enable skipped for fanIndex=\(fanIndex): \(error)")
                 }
 
                 let keyInfo = try backend.keyMetadata(for: targetKey)
-                print("smc write target probe key=\(targetKey) size=\(keyInfo.size) type=\(keyInfo.dataTypeCode)")
+                MFanLogger.log("smc write target probe key=\(targetKey) size=\(keyInfo.size) type=\(keyInfo.dataTypeCode)")
                 let candidatePayloads = Self.encodeRPMCandidates(
                     rpm,
                     size: keyInfo.size,
@@ -207,39 +221,39 @@ final class SystemSMCBridge: SMCBridging {
                 for payload in candidatePayloads {
                     do {
                         try backend.writeKey(targetKey, bytes: payload, sizeHint: keyInfo.size)
-                        print("smc write success target=\(targetKey) fanIndex=\(fanIndex) payload=\(payloadHex(payload))")
+                        MFanLogger.log("smc write success target=\(targetKey) fanIndex=\(fanIndex) payload=\(payloadHex(payload))")
                         if targetKey != fanKey {
-                            print("smc write success using fallback key=\(targetKey) fanIndex=\(fanIndex)")
+                            MFanLogger.log("smc write success using fallback key=\(targetKey) fanIndex=\(fanIndex)")
                         }
                         return true
                     } catch {
                         lastError = error
                         lastFailure = error
-                        print("smc write payload failed fan=\(fanIndex) key=\(targetKey) payload=\(payloadHex(payload)) error=\(error)")
+                        MFanLogger.log("smc write payload failed fan=\(fanIndex) key=\(targetKey) payload=\(payloadHex(payload)) error=\(error)")
                     }
                 }
                 if let lastError {
-                    print("smc write target failed for fanIndex=\(fanIndex), key=\(targetKey): \(lastError)")
+                    MFanLogger.log("smc write target failed for fanIndex=\(fanIndex), key=\(targetKey): \(lastError)")
                 }
                 continue
             } catch {
                 lastFailure = error
-                print("smc write target metadata failed fanIndex=\(fanIndex), key=\(targetKey): \(error)")
+                MFanLogger.log("smc write target metadata failed fanIndex=\(fanIndex), key=\(targetKey): \(error)")
                 for fallbackSize in [UInt32(2), 4] {
-                    print("smc write fallback size fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize)")
+                    MFanLogger.log("smc write fallback size fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize)")
                     let fallbackPayloads = Self.encodeRPMCandidates(rpm, size: fallbackSize, dataType: "")
                     for payload in fallbackPayloads {
                         do {
-                            print("smc write fallback attempt fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize) payload=\(payloadHex(payload))")
+                            MFanLogger.log("smc write fallback attempt fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize) payload=\(payloadHex(payload))")
                             try backend.writeKey(targetKey, bytes: payload, sizeHint: fallbackSize)
-                            print("smc write success target=\(targetKey) fanIndex=\(fanIndex) payload=\(payloadHex(payload))")
+                            MFanLogger.log("smc write success target=\(targetKey) fanIndex=\(fanIndex) payload=\(payloadHex(payload))")
                             if targetKey != fanKey {
-                                print("smc write success using fallback key=\(targetKey) fanIndex=\(fanIndex)")
+                                MFanLogger.log("smc write success using fallback key=\(targetKey) fanIndex=\(fanIndex)")
                             }
                             return true
                         } catch {
                             lastFailure = error
-                            print("smc write fallback failed fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize) payload=\(payloadHex(payload)) error=\(error)")
+                            MFanLogger.log("smc write fallback failed fan=\(fanIndex) key=\(targetKey) size=\(fallbackSize) payload=\(payloadHex(payload)) error=\(error)")
                             continue
                         }
                     }

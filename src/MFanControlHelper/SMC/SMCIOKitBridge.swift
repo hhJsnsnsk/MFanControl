@@ -1,5 +1,6 @@
 import Foundation
 import IOKit
+import MFanControlShared
 
 enum SMCIOResult: Error {
     case unsupported
@@ -175,6 +176,18 @@ final class IOKitSMCBridge {
         )
     }
 
+    func disableManualMode(for fanIndex: Int) {
+        let modeKey = String(format: modeKeyFormat, fanIndex)
+        let offPayloads: [([UInt8], UInt32)] = [([0], 1), ([0], 2), ([0, 0], 2)]
+        for (bytes, sizeHint) in offPayloads {
+            if (try? writeKey(modeKey, bytes: bytes, sizeHint: sizeHint)) != nil {
+                MFanLogger.log("smc manual mode disabled fan=\(fanIndex) key=\(modeKey)")
+                return
+            }
+        }
+        MFanLogger.log("smc manual mode disable failed fan=\(fanIndex) key=\(modeKey) — macOS will reclaim control on next tick")
+    }
+
     func enableManualMode(for fanIndex: Int) throws {
         let modeKey = String(format: modeKeyFormat, fanIndex)
         let directPayloads: [([UInt8], UInt32)] = [
@@ -197,17 +210,17 @@ final class IOKitSMCBridge {
             return lastError
         }
 
-        print("smc manual unlock direct attempt fan=\(fanIndex) key=\(modeKey)")
+        MFanLogger.log("smc manual unlock direct attempt fan=\(fanIndex) key=\(modeKey)")
         if tryDirectWrite(modeKey) == nil {
-            print("smc manual unlock direct success fan=\(fanIndex) key=\(modeKey)")
+            MFanLogger.log("smc manual unlock direct success fan=\(fanIndex) key=\(modeKey)")
             return
         }
 
-        print("smc manual unlock direct failed fan=\(fanIndex) key=\(modeKey)")
-        print("smc manual unlock ftst attempt fan=\(fanIndex)")
+        MFanLogger.log("smc manual unlock direct failed fan=\(fanIndex) key=\(modeKey)")
+        MFanLogger.log("smc manual unlock ftst attempt fan=\(fanIndex)")
         let ftstError = tryDirectWrite("Ftst")
         if let ftstError {
-            print("smc manual unlock ftst failed fan=\(fanIndex) error=\(ftstError)")
+            MFanLogger.log("smc manual unlock ftst failed fan=\(fanIndex) error=\(ftstError)")
             throw ftstError
         }
 
@@ -216,13 +229,13 @@ final class IOKitSMCBridge {
         var attempt = 0
         while true {
             attempt += 1
-            print("smc manual unlock retry fan=\(fanIndex) key=\(modeKey) attempt=\(attempt)")
+            MFanLogger.log("smc manual unlock retry fan=\(fanIndex) key=\(modeKey) attempt=\(attempt)")
             if tryDirectWrite(modeKey) == nil {
-                print("smc manual unlock retry success fan=\(fanIndex) key=\(modeKey) attempt=\(attempt)")
+                MFanLogger.log("smc manual unlock retry success fan=\(fanIndex) key=\(modeKey) attempt=\(attempt)")
                 return
             }
             if Date() >= deadline {
-                print("smc manual unlock timeout fan=\(fanIndex) key=\(modeKey) attempts=\(attempt)")
+                MFanLogger.log("smc manual unlock timeout fan=\(fanIndex) key=\(modeKey) attempts=\(attempt)")
                 throw SMCBridgeError.commandFailure("iokit-ftst-timeout")
             }
             Thread.sleep(forTimeInterval: 0.1)
@@ -414,10 +427,10 @@ private enum SMCConnection {
         for clientType in clientTypeOrder {
             let result = IOServiceOpen(service, mach_task_self_, clientType, &con)
             if result == kIOReturnSuccess {
-                print("smc-open client-type: \(clientType)")
+                MFanLogger.log("smc-open client-type: \(clientType)")
                 return (con, clientType)
             }
-            print("smc-open client-type \(clientType) failed: \(result)")
+            MFanLogger.log("smc-open client-type \(clientType) failed: \(result)")
         }
         throw SMCIOResult.unsupported
     }

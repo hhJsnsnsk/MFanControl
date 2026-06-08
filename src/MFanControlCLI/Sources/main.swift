@@ -53,8 +53,13 @@ case .history:
     if records.isEmpty {
         print("history: empty")
     } else {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm:ss"
         for item in records {
-            print("\(item.timestamp): score=\(item.thermalScore) source=\(item.source) reason=\(item.reason)")
+            let t = fmt.string(from: item.timestamp)
+            let score = String(format: "%.0f", item.thermalScore)
+            let rpmStr = item.targetRPM > 0 ? " rpm=\(item.currentRPM)/\(item.targetRPM)" : ""
+            print("\(t) score=\(score)\(rpmStr) [\(item.source)] \(item.reason)")
         }
     }
 case .events:

@@ -218,7 +218,9 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
             TelemetrySampleRecord(
                 thermalScore: lastObservedThermalScore ?? Double(currentRPM),
                 source: "app",
-                reason: lastReason
+                reason: lastReason,
+                targetRPM: command.targetRPM,
+                currentRPM: currentRPM
             )
         )
         telemetryStore.appendEvent(
@@ -396,9 +398,11 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         if !lastSampleAvailability.isEmpty {
             telemetryStore.append(
                 TelemetrySampleRecord(
-                    thermalScore: Double(availabilityScore),
+                    thermalScore: lastObservedThermalScore ?? Double(availabilityScore),
                     source: "sensor",
-                    reason: "sample"
+                    reason: "sample",
+                    targetRPM: targetRPM,
+                    currentRPM: currentRPM
                 )
             )
         }
@@ -576,7 +580,6 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         if availableCriticalCount >= 2 { return true }
         if directTemperatures >= 2 { return true }
         if directTemperatures >= 1 && rawTemperatures >= 1 { return true }
-        if rawTemperatures >= 2 { return true }
 
         return false
     }
