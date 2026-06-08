@@ -45,7 +45,7 @@ private enum Style {
     static let rowValueFont = NSFont.monospacedDigitSystemFont(ofSize: 9.8, weight: .semibold)
     static let compactValueFont = NSFont.systemFont(ofSize: 9, weight: .regular)
     static let sectionTitleFont = NSFont.systemFont(ofSize: 8.6, weight: .medium)
-    static let statusBarLength: CGFloat = NSStatusItem.squareLength
+    static let statusBarLength: CGFloat = NSStatusItem.variableLength
     static let statusImageSize: CGFloat = 11
     static let statusImageName = "fan.fill"
     static let fallbackStatusImageName = "fan"
@@ -84,9 +84,6 @@ public final class MenuBarController {
             button.target = self
             button.action = #selector(togglePopover(_:))
             button.sendAction(on: [.leftMouseUp])
-            if #available(macOS 11.0, *) {
-                button.contentTintColor = .white
-            }
         }
         statusItem.button?.toolTip = "MFanControl"
         refresh()
@@ -283,13 +280,24 @@ public final class MenuBarController {
     }
 
     private func applyCompactStatusPresentation(to button: NSStatusBarButton, model: MenuBarViewModel) {
-        button.image = statusSystemImage(for: model)
-        button.imagePosition = .imageOnly
-        button.image?.isTemplate = true
-        button.image?.size = NSSize(width: Style.statusImageSize, height: Style.statusImageSize)
-        button.attributedTitle = NSAttributedString(string: "", attributes: [.font: Style.statusFont])
-        if #available(macOS 11.0, *) {
-            button.contentTintColor = .white
+        let image = statusSystemImage(for: model)
+        image.isTemplate = true
+        image.size = NSSize(width: Style.statusImageSize, height: Style.statusImageSize)
+        button.image = image
+
+        if let temp = model.currentTempC {
+            let tempStr = "\(Int(temp))°"
+            button.imagePosition = .imageLeading
+            button.attributedTitle = NSAttributedString(
+                string: tempStr,
+                attributes: [
+                    .font: Style.statusFont,
+                    .foregroundColor: NSColor.labelColor
+                ]
+            )
+        } else {
+            button.imagePosition = .imageOnly
+            button.attributedTitle = NSAttributedString(string: "")
         }
     }
 

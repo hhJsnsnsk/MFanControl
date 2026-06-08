@@ -62,6 +62,7 @@ SUDO=()
 if [[ "$(id -u)" -ne 0 ]]; then
   SUDO=(sudo -S)
 fi
+_sudo() { ${SUDO[@]+"${SUDO[@]}"} "$@"; }
 
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
   TARGET_USER="$SUDO_USER"
@@ -107,7 +108,7 @@ resolve_signing_identity() {
 
 run_as_user() {
   if [[ "${#SUDO[@]}" -ne 0 ]]; then
-    "${SUDO[@]}" -u "$TARGET_USER" "$@"
+    _sudo -u "$TARGET_USER" "$@"
   else
     "$@"
   fi
@@ -167,33 +168,33 @@ else
   sign_binary "$CLI_BIN_SRC" "$CONTROL_ENTITLEMENTS_SRC"
 fi
 
-"${SUDO[@]}" mkdir -p /Library/PrivilegedHelperTools
-"${SUDO[@]}" install -m 755 "$HELPER_BIN_SRC" "$HELPER_BIN_DST"
+_sudo mkdir -p /Library/PrivilegedHelperTools
+_sudo install -m 755 "$HELPER_BIN_SRC" "$HELPER_BIN_DST"
 
 echo "Installing app + cli binaries to /usr/local/bin..."
-"${SUDO[@]}" mkdir -p "$USR_LOCAL_BIN_DIR"
-"${SUDO[@]}" cp "$APP_BIN_SRC" "$APP_BIN_DST"
-"${SUDO[@]}" cp "$CLI_BIN_SRC" "$CLI_BIN_DST"
-"${SUDO[@]}" cp "$APP_LAUNCHER_SRC" "$APP_LAUNCHER_DST"
-"${SUDO[@]}" chmod 755 "$APP_BIN_DST" "$CLI_BIN_DST" "$APP_LAUNCHER_DST"
+_sudo mkdir -p "$USR_LOCAL_BIN_DIR"
+_sudo cp "$APP_BIN_SRC" "$APP_BIN_DST"
+_sudo cp "$CLI_BIN_SRC" "$CLI_BIN_DST"
+_sudo cp "$APP_LAUNCHER_SRC" "$APP_LAUNCHER_DST"
+_sudo chmod 755 "$APP_BIN_DST" "$CLI_BIN_DST" "$APP_LAUNCHER_DST"
 
 echo "Installing helper launch daemon..."
-"${SUDO[@]}" mkdir -p "$HELPER_LAUNCHD_DIR"
-"${SUDO[@]}" cp "$HELPER_PLIST_SRC" "$HELPER_LAUNCHD_PLIST"
-"${SUDO[@]}" chown root:wheel "$HELPER_LAUNCHD_PLIST"
-"${SUDO[@]}" chmod 644 "$HELPER_LAUNCHD_PLIST"
+_sudo mkdir -p "$HELPER_LAUNCHD_DIR"
+_sudo cp "$HELPER_PLIST_SRC" "$HELPER_LAUNCHD_PLIST"
+_sudo chown root:wheel "$HELPER_LAUNCHD_PLIST"
+_sudo chmod 644 "$HELPER_LAUNCHD_PLIST"
 
 echo "Installing menu bar launch agent..."
-"${SUDO[@]}" mkdir -p "$APP_LAUNCHAGENT_DIR"
-"${SUDO[@]}" cp "$APP_PLIST_SRC" "$APP_LAUNCHAGENT_PLIST"
+_sudo mkdir -p "$APP_LAUNCHAGENT_DIR"
+_sudo cp "$APP_PLIST_SRC" "$APP_LAUNCHAGENT_PLIST"
 
 echo "Stopping existing services..."
 run_as_user launchctl bootout gui/"$TARGET_UID" "$APP_LAUNCHAGENT_PLIST" >/dev/null 2>&1 || true
 run_as_user pkill -x MFanControlApp >/dev/null 2>&1 || true
-"${SUDO[@]}" launchctl bootout system "$HELPER_LAUNCHD_PLIST" >/dev/null 2>&1 || true
+_sudo launchctl bootout system "$HELPER_LAUNCHD_PLIST" >/dev/null 2>&1 || true
 
 echo "Loading helper launch daemon..."
-"${SUDO[@]}" launchctl bootstrap system "$HELPER_LAUNCHD_PLIST"
+_sudo launchctl bootstrap system "$HELPER_LAUNCHD_PLIST"
 
 echo "Loading menu bar launch agent..."
 if ! run_as_user launchctl bootstrap gui/"$TARGET_UID" "$APP_LAUNCHAGENT_PLIST"; then
