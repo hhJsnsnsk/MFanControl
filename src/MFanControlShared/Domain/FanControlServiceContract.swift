@@ -24,7 +24,7 @@ public extension FanControlServiceProtocol {
 }
 
 private enum FanControlRuntimeServiceKeys {
-    static let helperServiceLabel = "com.starrysky.MFanControlHelper.xpc"
+    static let helperServiceLabel = "com.starrysky.MFanControlHelper"
 }
 
 public final class FanControlRuntimeService: FanControlServiceProtocol {
@@ -40,6 +40,7 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
     public private(set) var telemetryStore: TelemetryStoreProtocol
     private let sensorSampler: SensorSampler
     private var lastSampleAvailability: [String: SensorChannelAvailability]
+    private var lastSample: SensorSample?
     private var lastThrottleState: ThermalThrottleState
     private var lastPowerSource: String
     private var lastSampleAt: Date?
@@ -84,6 +85,7 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         )
         self.sensorSampler = sensorSampler
         self.lastSampleAvailability = [:]
+        self.lastSample = nil
         self.lastThrottleState = .init(cpuThermalThrottled: false, gpuThermalThrottled: false, reason: "init")
         self.lastPowerSource = "unknown"
         self.lastSustainedLoad = 0
@@ -208,6 +210,7 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         if stateMachine.state == .idle || stateMachine.state == .manualDefault || stateMachine.state == .discovering {
             _ = stateMachine.apply(event: .systemEvent)
             stateMachine.state = .smartControl
+            stateMachine.source = .appAuto
         }
 
         lastReason = command.reason ?? "apply-command"
@@ -333,6 +336,7 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
     public func readSensorSample() -> SensorSample {
         let output = sensorSampler.nextSample(at: Date())
         var sample = output.sample
+        lastSample = sample
 
         updateLoadProfile(sample.timestamp)
         sample.sustainedLoadSec = lastSustainedLoad
@@ -346,19 +350,23 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         evaluateSafetyState(from: score, sample: sample)
 
         if hardwareAvailableForControl() {
-            if stateMachine.state == .idle {
+            if stateMachine.state == .safetyFallback, lastReason == "sensor-fault" {
                 _ = stateMachine.apply(event: .sensorRecovered)
+                safetyViolationStartedAt = nil
+                lastReason = "sensor-recovered"
                 telemetryStore.appendEvent(
                     TelemetryEventRecord(
                         state: stateMachine.state.rawValue,
                         level: "info",
-                        reason: "sensor-recovered",
+                        reason: lastReason,
                         payload: ["count": "\(lastSampleAvailability.count)"]
                     )
                 )
             }
         } else {
             _ = stateMachine.apply(event: .sensorFault)
+            safetyViolationStartedAt = nil
+            lastReason = "sensor-fault"
             telemetryStore.appendEvent(
                 TelemetryEventRecord(
                     state: stateMachine.state.rawValue,
@@ -542,6 +550,18 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
         if hardwareProfile.fans.filter({ $0.controllable }).isEmpty {
             return false
         }
+        guard let sample = lastSample else {
+            return false
+        }
+
+        let directTemperatures = [sample.cpuPcoreTempC, sample.cpuEcoreTempC, sample.gpuTempC, sample.socTempC]
+            .compactMap { $0 }
+            .filter { $0 > 15 && $0 < 130 }
+            .count
+
+        let rawTemperatures = sample.rawTemperatureSensors.filter {
+            (15...130).contains($0.tempC)
+        }.count
 
         let critical: [String] = [
             SensorReadingSources.cpu,
@@ -549,9 +569,16 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
             SensorReadingSources.soc
         ]
 
-        return critical.allSatisfy {
+        let availableCriticalCount = critical.filter {
             lastSampleAvailability[$0]?.available == true
-        }
+        }.count
+
+        if availableCriticalCount >= 2 { return true }
+        if directTemperatures >= 2 { return true }
+        if directTemperatures >= 1 && rawTemperatures >= 1 { return true }
+        if rawTemperatures >= 2 { return true }
+
+        return false
     }
 
     private func updateLoadProfile(_ now: Date) {
@@ -651,7 +678,9 @@ public final class FanControlRuntimeService: FanControlServiceProtocol {
 
 private extension SensorSample {
     func availableCriticalSensors() -> Bool {
-        [cpuPcoreTempC, gpuTempC, socTempC].allSatisfy { $0 != nil }
+        let direct = [cpuPcoreTempC, gpuTempC, socTempC].compactMap { $0 }.filter { $0 > 15 && $0 < 130 }
+        if direct.count >= 2 { return true }
+        return rawTemperatureSensors.filter { (15...130).contains($0.tempC) }.count >= 2
     }
 }
 

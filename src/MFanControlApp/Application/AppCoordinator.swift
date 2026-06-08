@@ -226,7 +226,7 @@ public final class AppCoordinator {
             upgradeConservativeMode: config.upgradeConservativeMode
         )
         let adjustedCmd = applyRapidHeatSafety(cmd: cmd, sample: sample, maxRPM: maxRPM)
-        if shouldPauseControl(using: snapshot) {
+        if shouldPauseControl(using: snapshot, sample: sample) {
             lastDecision = "state=\(state.rawValue);safety-pause"
             _ = xpc.restoreToAppleDefault(reason: "sensor-critical")
             let command = ControlCommand(action: .restoreDefault, targetRPM: 0, reason: "sensor-critical")
@@ -298,6 +298,14 @@ public final class AppCoordinator {
         lastDecision
     }
 
+    public func recentTelemetrySamples(limit: Int = 8) -> [TelemetrySampleRecord] {
+        xpc.recentSamples(limit: limit)
+    }
+
+    public func recentTelemetryEvents(limit: Int = 4) -> [TelemetryEventRecord] {
+        xpc.recentEvents(limit: limit)
+    }
+
     private func syncRuntimeState(from snapshot: FanControlSnapshot) {
         stateMachine.state = snapshot.state
         stateMachine.source = snapshot.source
@@ -361,10 +369,28 @@ public final class AppCoordinator {
         return adjusted
     }
 
-    private func shouldPauseControl(using snapshot: FanControlSnapshot) -> Bool {
+    private func shouldPauseControl(using snapshot: FanControlSnapshot, sample: SensorSample) -> Bool {
+        if snapshot.throttleState.isThrottling {
+            return true
+        }
+
         let critical = [SensorReadingSources.cpu, SensorReadingSources.gpu, SensorReadingSources.soc]
         let availabilityCount = critical.filter { snapshot.sensorAvailability[$0]?.available == true }.count
-        return availabilityCount < 2 || snapshot.throttleState.isThrottling
+        if availabilityCount >= 2 {
+            return false
+        }
+
+        let directCount = [sample.cpuPcoreTempC, sample.cpuEcoreTempC, sample.gpuTempC, sample.socTempC]
+            .compactMap { $0 }
+            .filter { $0 > 15 && $0 < 130 }
+            .count
+
+        if directCount >= 2 {
+            return false
+        }
+
+        let rawCount = sample.rawTemperatureSensors.filter { (15...130).contains($0.tempC) }.count
+        return directCount == 0 && rawCount < 2
     }
 
     private func refreshAppBoostState() {

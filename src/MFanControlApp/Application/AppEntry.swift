@@ -10,6 +10,8 @@ public enum MFanControlAppEntry {
         coordinator.start()
 
         #if canImport(AppKit)
+        terminateDuplicateMenuInstances()
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.activate(ignoringOtherApps: true)
@@ -32,6 +34,21 @@ public enum MFanControlAppEntry {
         #else
         let loop = AppLifecycleLoop(coordinator: coordinator)
         loop.start()
+        #endif
+    }
+
+    private static func terminateDuplicateMenuInstances() {
+        #if canImport(AppKit)
+        guard let bundleID = Bundle.main.bundleIdentifier else {
+            return
+        }
+        let currentPID = Int32(ProcessInfo.processInfo.processIdentifier)
+        let running = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == bundleID && $0.processIdentifier != currentPID
+        }
+        for app in running {
+            app.terminate()
+        }
         #endif
     }
 }

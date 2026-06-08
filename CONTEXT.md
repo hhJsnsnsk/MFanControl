@@ -80,6 +80,7 @@
 
 `SmartControl` 的入口条件：  
 - helper 已安装且健康  
+- helper 以有效签名身份安装，并且带有可访问 `AppleSMCClient` 的 IOKit temporary exception，能通过 privileged helper 路径写入风扇键  
 - 当前机型可控（非无风扇/非 Apple Silicon）  
 - 安全条件满足（无关键传感器失效、无链路异常）
 

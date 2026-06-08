@@ -19,6 +19,19 @@ swift test
 
 当前版本优先保证读数真实性：读不到的分类温度明确显示为 unavailable，不用模拟值代替；无法可靠映射到 CPU/GPU/SoC 的 raw 传感器不会直接用于自动控制。
 
+## 发布打包
+
+```bash
+./scripts/package-release.sh
+```
+
+脚本会：
+
+- 构建 release 产物，或复用已有的 `.build/release`
+- 生成可直接打开的 `MFanControl.app`
+- 组装一份可自安装的发布目录
+- 输出对应的 zip 和 SHA-256 校验值
+
 ## 本地部署（launchd 持久化）
 
 ```bash

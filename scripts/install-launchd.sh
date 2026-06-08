@@ -5,10 +5,11 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/install-launchd.sh [--no-build]
+  ./scripts/install-launchd.sh [--no-build] [--skip-sign]
 
 Options:
   --no-build   Skip `swift build -c release`, assume .build/release binaries exist.
+  --skip-sign  Skip local codesigning step, assume release binaries are already signed with the helper entitlement.
 EOF
 }
 
@@ -18,9 +19,19 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 SKIP_BUILD=0
-if [[ "${1:-}" == "--no-build" ]]; then
-  SKIP_BUILD=1
-fi
+
+SKIP_SIGNING=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-build)
+      SKIP_BUILD=1
+      ;;
+    --skip-sign)
+      SKIP_SIGNING=1
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -29,9 +40,11 @@ BUILD_DIR="$PROJECT_ROOT/.build/release"
 HELPER_LABEL="com.starrysky.MFanControlHelper"
 APP_LABEL="com.starrysky.MFanControlApp"
 RESOURCE_DIR="$PROJECT_ROOT/resources/launchd"
+SIGNING_DIR="$PROJECT_ROOT/resources/signing"
 HELPER_PLIST_SRC="$RESOURCE_DIR/$HELPER_LABEL.plist"
 APP_PLIST_SRC="$RESOURCE_DIR/$APP_LABEL.plist"
 APP_LAUNCHER_SRC="$RESOURCE_DIR/MFanControlAppLauncher"
+CONTROL_ENTITLEMENTS_SRC="$SIGNING_DIR/MFanControl.entitlements"
 
 HELPER_BIN_SRC="$BUILD_DIR/MFanControlHelper"
 APP_BIN_SRC="$BUILD_DIR/MFanControlApp"
@@ -45,9 +58,9 @@ USR_LOCAL_BIN_DIR="/usr/local/bin"
 HELPER_LAUNCHD_DIR="/Library/LaunchDaemons"
 HELPER_LAUNCHD_PLIST="$HELPER_LAUNCHD_DIR/$HELPER_LABEL.plist"
 
-SUDO=""
+SUDO=()
 if [[ "$(id -u)" -ne 0 ]]; then
-  SUDO="sudo"
+  SUDO=(sudo -S)
 fi
 
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -65,19 +78,65 @@ fi
 APP_LAUNCHAGENT_DIR="$APP_USER_HOME/Library/LaunchAgents"
 APP_LAUNCHAGENT_PLIST="$APP_LAUNCHAGENT_DIR/$APP_LABEL.plist"
 
+resolve_signing_identity() {
+  if [[ -n "${MFANCONTROL_CODESIGN_IDENTITY:-}" ]]; then
+    printf '%s\n' "$MFANCONTROL_CODESIGN_IDENTITY"
+    return 0
+  fi
+
+  security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '
+    BEGIN {
+      found = 0
+      fallback = ""
+    }
+    /Developer ID Application:/ {
+      print $2
+      found = 1
+      exit
+    }
+    /Apple Development:/ && fallback == "" {
+      fallback = $2
+    }
+    END {
+      if (found == 0 && fallback != "") {
+        print fallback
+      }
+    }
+  '
+}
+
 run_as_user() {
-  if [[ -n "$SUDO" ]]; then
-    "$SUDO" -u "$TARGET_USER" "$@"
+  if [[ "${#SUDO[@]}" -ne 0 ]]; then
+    "${SUDO[@]}" -u "$TARGET_USER" "$@"
   else
     "$@"
   fi
 }
 
 sign_binary() {
+  if [[ "$SKIP_SIGNING" -eq 1 ]]; then
+    return 0
+  fi
   local binary="$1"
-  $SUDO xattr -cr "$binary" >/dev/null 2>&1 || true
-  $SUDO codesign --force --sign - "$binary" >/dev/null
+  local entitlements="${2:-}"
+  xattr -cr "$binary" >/dev/null 2>&1 || true
+  if [[ -n "$entitlements" ]]; then
+    codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$entitlements" "$binary" >/dev/null
+  else
+    codesign --force --sign "$SIGNING_IDENTITY" "$binary" >/dev/null
+  fi
+  codesign --verify --strict --verbose=2 "$binary" >/dev/null
 }
+
+SIGNING_IDENTITY=""
+if [[ "$SKIP_SIGNING" -eq 0 ]]; then
+  SIGNING_IDENTITY="$(resolve_signing_identity)"
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "No usable code-signing identity found." >&2
+    echo "Set MFANCONTROL_CODESIGN_IDENTITY or install a Developer ID / Apple Development certificate." >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -x "$HELPER_BIN_SRC" || ! -x "$APP_BIN_SRC" || ! -x "$CLI_BIN_SRC" ]]; then
   if [[ "$SKIP_BUILD" -eq 1 ]]; then
@@ -93,39 +152,48 @@ if [[ ! -r "$HELPER_PLIST_SRC" || ! -r "$APP_PLIST_SRC" ]]; then
   exit 1
 fi
 
+if [[ "$SKIP_SIGNING" -eq 0 && ! -r "$CONTROL_ENTITLEMENTS_SRC" ]]; then
+  echo "Signing entitlements missing, expected at $CONTROL_ENTITLEMENTS_SRC" >&2
+  exit 1
+fi
+
 echo "Installing helper binary to $HELPER_BIN_DST..."
-$SUDO mkdir -p /Library/PrivilegedHelperTools
-$SUDO install -m 755 "$HELPER_BIN_SRC" "$HELPER_BIN_DST"
+if [[ "$SKIP_SIGNING" -eq 1 ]]; then
+  echo "Skipping local signing step."
+else
+  echo "Using signing identity: $SIGNING_IDENTITY"
+  sign_binary "$HELPER_BIN_SRC" "$CONTROL_ENTITLEMENTS_SRC"
+  sign_binary "$APP_BIN_SRC" "$CONTROL_ENTITLEMENTS_SRC"
+  sign_binary "$CLI_BIN_SRC" "$CONTROL_ENTITLEMENTS_SRC"
+fi
+
+"${SUDO[@]}" mkdir -p /Library/PrivilegedHelperTools
+"${SUDO[@]}" install -m 755 "$HELPER_BIN_SRC" "$HELPER_BIN_DST"
 
 echo "Installing app + cli binaries to /usr/local/bin..."
-$SUDO mkdir -p "$USR_LOCAL_BIN_DIR"
-$SUDO cp "$APP_BIN_SRC" "$APP_BIN_DST"
-$SUDO cp "$CLI_BIN_SRC" "$CLI_BIN_DST"
-$SUDO cp "$APP_LAUNCHER_SRC" "$APP_LAUNCHER_DST"
-$SUDO chmod 755 "$APP_BIN_DST" "$CLI_BIN_DST" "$APP_LAUNCHER_DST"
-
-echo "Signing installed binaries..."
-sign_binary "$HELPER_BIN_DST"
-sign_binary "$APP_BIN_DST"
-sign_binary "$CLI_BIN_DST"
+"${SUDO[@]}" mkdir -p "$USR_LOCAL_BIN_DIR"
+"${SUDO[@]}" cp "$APP_BIN_SRC" "$APP_BIN_DST"
+"${SUDO[@]}" cp "$CLI_BIN_SRC" "$CLI_BIN_DST"
+"${SUDO[@]}" cp "$APP_LAUNCHER_SRC" "$APP_LAUNCHER_DST"
+"${SUDO[@]}" chmod 755 "$APP_BIN_DST" "$CLI_BIN_DST" "$APP_LAUNCHER_DST"
 
 echo "Installing helper launch daemon..."
-$SUDO mkdir -p "$HELPER_LAUNCHD_DIR"
-$SUDO cp "$HELPER_PLIST_SRC" "$HELPER_LAUNCHD_PLIST"
-$SUDO chown root:wheel "$HELPER_LAUNCHD_PLIST"
-$SUDO chmod 644 "$HELPER_LAUNCHD_PLIST"
+"${SUDO[@]}" mkdir -p "$HELPER_LAUNCHD_DIR"
+"${SUDO[@]}" cp "$HELPER_PLIST_SRC" "$HELPER_LAUNCHD_PLIST"
+"${SUDO[@]}" chown root:wheel "$HELPER_LAUNCHD_PLIST"
+"${SUDO[@]}" chmod 644 "$HELPER_LAUNCHD_PLIST"
 
 echo "Installing menu bar launch agent..."
-$SUDO mkdir -p "$APP_LAUNCHAGENT_DIR"
-$SUDO cp "$APP_PLIST_SRC" "$APP_LAUNCHAGENT_PLIST"
+"${SUDO[@]}" mkdir -p "$APP_LAUNCHAGENT_DIR"
+"${SUDO[@]}" cp "$APP_PLIST_SRC" "$APP_LAUNCHAGENT_PLIST"
 
 echo "Stopping existing services..."
 run_as_user launchctl bootout gui/"$TARGET_UID" "$APP_LAUNCHAGENT_PLIST" >/dev/null 2>&1 || true
 run_as_user pkill -x MFanControlApp >/dev/null 2>&1 || true
-$SUDO launchctl bootout system "$HELPER_LAUNCHD_PLIST" >/dev/null 2>&1 || true
+"${SUDO[@]}" launchctl bootout system "$HELPER_LAUNCHD_PLIST" >/dev/null 2>&1 || true
 
 echo "Loading helper launch daemon..."
-$SUDO launchctl bootstrap system "$HELPER_LAUNCHD_PLIST"
+"${SUDO[@]}" launchctl bootstrap system "$HELPER_LAUNCHD_PLIST"
 
 echo "Loading menu bar launch agent..."
 if ! run_as_user launchctl bootstrap gui/"$TARGET_UID" "$APP_LAUNCHAGENT_PLIST"; then

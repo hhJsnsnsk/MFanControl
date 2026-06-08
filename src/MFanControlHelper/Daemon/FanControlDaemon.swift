@@ -42,6 +42,10 @@ public final class FanControlDaemon {
         func currentFanRPM(fanKey: String) throws -> Int {
             throw SMCBridgeError.commandFailure("forced-smc-unavailable")
         }
+
+        func keyMetadata(for key: String) throws -> SMCKeyMetadata {
+            throw SMCBridgeError.commandFailure("forced-smc-unavailable")
+        }
     }
 
     private final class FailingSMCBridge: SMCBridging {
@@ -56,6 +60,10 @@ public final class FanControlDaemon {
         }
 
         func currentFanRPM(fanKey: String) throws -> Int {
+            throw SMCBridgeError.commandFailure("forced-smc-write-failure")
+        }
+
+        func keyMetadata(for key: String) throws -> SMCKeyMetadata {
             throw SMCBridgeError.commandFailure("forced-smc-write-failure")
         }
     }
@@ -139,10 +147,12 @@ public final class FanControlDaemon {
             }
             let fanCount = max(1, controllable.first?.fanCount ?? 1)
             let rpmToWrite = service.currentState().currentRPM
+            var readableFanRPMs: [Int] = []
             for fan in 0..<fanCount {
-                let fanKey = SMCKeyCatalog.fanCurrentRPMKey(for: fan)
-                _ = try bridge.writeFanRPM(fanKey, rpm: rpmToWrite)
-                if let readbackRPM = try? bridge.currentFanRPM(fanKey: fanKey) {
+                let readKey = SMCKeyCatalog.fanCurrentRPMKey(for: fan)
+                let targetKey = SMCKeyCatalog.fanTargetRPMKey(for: fan)
+                _ = try writeWithFallback(target: targetKey, readKey: readKey, rpm: rpmToWrite)
+                if let readbackRPM = try? bridge.currentFanRPM(fanKey: readKey), readbackRPM > 0 {
                     let drift = abs(readbackRPM - rpmToWrite)
                     let driftTolerance = max(450, min(800, command.targetRPM / 4))
                     if drift > driftTolerance && rpmToWrite > 0 {
@@ -150,14 +160,44 @@ public final class FanControlDaemon {
                             "fan-rpm-unchanged fan=\(fan) requested=\(rpmToWrite) readback=\(readbackRPM)"
                         )
                     }
+                    if readbackRPM > 0 {
+                        readableFanRPMs.append(readbackRPM)
+                    }
                 }
             }
+            if readableFanRPMs.isEmpty {
+                print("smc write succeeded but readback unavailable; continuing with desired rpm=\(rpmToWrite)")
+            }
         } catch {
+            let fallbackReason = safetyFallbackReason(for: error)
             print("smc write failed for rpm=\(command.targetRPM): \(error)")
-            return safetyFallbackResult(reason: "smc-write-failed:\(error)")
+            return safetyFallbackResult(reason: fallbackReason)
         }
 
         return result
+    }
+
+    private func writeWithFallback(target: String, readKey: String, rpm: Int) throws {
+        do {
+            _ = try bridge.writeFanRPM(target, rpm: rpm)
+            return
+        } catch {
+            print("smc write primary target failed (\(target)): \(error)")
+        }
+
+        if target.contains("Tg") {
+            let alternate = readKey
+            do {
+                _ = try bridge.writeFanRPM(alternate, rpm: rpm)
+                print("smc write fallback success via target=\(alternate)")
+                return
+            } catch {
+                print("smc write fallback failed (\(alternate)): \(error)")
+                throw error
+            }
+        }
+
+        throw SMCBridgeError.commandFailure("fan-write-failed-all-keys")
     }
 
     private func safetyFallbackResult(reason: String) -> FanControlResult {
@@ -170,6 +210,20 @@ public final class FanControlDaemon {
             source: fallback.source,
             timestamp: Date()
         )
+    }
+
+    private func safetyFallbackReason(for error: Error) -> String {
+        let description = String(describing: error)
+        if description.contains("0xe00002c2") {
+            return "smc-write-failed:bad-argument"
+        }
+        if description.contains("smc-write-target-unavailable") {
+            return "smc-write-failed:target-unavailable"
+        }
+        if description.contains("iokit-keyinfo-failed") {
+            return "smc-write-failed:keyinfo-unavailable"
+        }
+        return "smc-write-failed:\(error)"
     }
 
     public func refreshFromHardwareProfile() {

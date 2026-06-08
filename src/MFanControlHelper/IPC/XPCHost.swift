@@ -18,15 +18,19 @@ public final class XPCHost {
             return nil
         }
         let effectiveMode = requestedMode ?? mode
+        let resolvedServiceName = serviceName
+            ?? ProcessInfo.processInfo.environment[FanControlXPCDefaults.helperServiceNameEnv]
+            ?? FanControlXPCDefaults.serviceName
 
         switch effectiveMode {
         case .localOnly:
             self.transport = .local
         case .remoteOnly:
-            self.transport = .remote(serviceName ?? FanControlXPCDefaults.serviceName)
+            self.transport = .remote(resolvedServiceName)
         case .auto:
-            if ProcessInfo.processInfo.environment[FanControlXPCDefaults.useRemoteEnv] == "1" {
-                self.transport = .remote(serviceName ?? FanControlXPCDefaults.serviceName)
+            if ProcessInfo.processInfo.environment[FanControlXPCDefaults.useRemoteEnv] == "1"
+                || Self.isRemoteServiceRunning(serviceName: resolvedServiceName) {
+                self.transport = .remote(resolvedServiceName)
             } else {
                 self.transport = .local
             }
@@ -46,66 +50,72 @@ public final class XPCHost {
     }
 
     public func apply(_ command: ControlCommand) -> FanControlResult {
-        let localFallback = daemon.applyCommand(command)
         do {
             let commandData = try FanControlXPCSerialization.encode(command)
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon] in
+                    daemon.applyCommand(command)
+                },
                 invocation: { proxy, reply in
                     proxy.apply(commandData, reply)
                 }
             )
         } catch {
-            return localFallback
+            return FanControlXPCSerialization.failureResult("xpc-transport-failed:\(error)")
         }
     }
 
     public func restoreDefault() -> FanControlResult {
-        let localFallback = daemon.restoreDefault(reason: "xpc-restore")
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon] in
+                    daemon.restoreDefault(reason: "xpc-restore")
+                },
                 invocation: { proxy, reply in
                     proxy.restoreToAppleDefault("xpc-restore", reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.restoreDefault(reason: "xpc-restore")
         }
     }
 
     public func restoreToAppleDefault(reason: String) -> FanControlResult {
-        let localFallback = daemon.restoreDefault(reason: reason)
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon, reason] in
+                    daemon.restoreDefault(reason: reason)
+                },
                 invocation: { proxy, reply in
                     proxy.restoreToAppleDefault(reason, reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.restoreDefault(reason: reason)
         }
     }
 
     public func setMode(_ mode: ThermalPolicy.Mode) -> FanControlResult {
-        let localFallback = daemon.setMode(mode)
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon, mode] in
+                    daemon.setMode(mode)
+                },
                 invocation: { proxy, reply in
                     proxy.setMode(mode.rawValue, reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.setMode(mode)
         }
     }
 
     public func discoverHardwareProfile() -> HardwareProfile {
         do {
             return try call(
-                withFallback: daemon.discoverHardware(),
+                withFallback: { [daemon] in
+                    daemon.discoverHardware()
+                },
                 invocation: { proxy, reply in
                     proxy.discoverHardwareProfile(reply)
                 }
@@ -118,7 +128,9 @@ public final class XPCHost {
     public func readSensorSample() -> SensorSample {
         do {
             return try call(
-                withFallback: daemon.readSensorSample(),
+                withFallback: { [daemon] in
+                    daemon.readSensorSample()
+                },
                 invocation: { proxy, reply in
                     proxy.readSensorSample(reply)
                 }
@@ -131,7 +143,9 @@ public final class XPCHost {
     public func exportConfig() -> ThermalControlConfig {
         do {
             return try call(
-                withFallback: daemon.exportConfig(),
+                withFallback: { [daemon] in
+                    daemon.exportConfig()
+                },
                 invocation: { proxy, reply in
                     proxy.exportConfig(reply)
                 }
@@ -142,24 +156,27 @@ public final class XPCHost {
     }
 
     public func importConfig(_ config: ThermalControlConfig) -> FanControlResult {
-        let localFallback = daemon.importConfig(config)
         do {
             let configData = try FanControlXPCSerialization.encode(config)
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon, config] in
+                    daemon.importConfig(config)
+                },
                 invocation: { proxy, reply in
                     proxy.importConfig(configData, reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.importConfig(config)
         }
     }
 
     public func recentSamples(limit: Int) -> [TelemetrySampleRecord] {
         do {
             return try call(
-                withFallback: daemon.recentSamples(limit: limit),
+                withFallback: { [daemon, limit] in
+                    daemon.recentSamples(limit: limit)
+                },
                 invocation: { proxy, reply in
                     proxy.recentSamples(limit: limit, reply)
                 }
@@ -172,7 +189,9 @@ public final class XPCHost {
     public func recentEvents(limit: Int) -> [TelemetryEventRecord] {
         do {
             return try call(
-                withFallback: daemon.recentEvents(limit: limit),
+                withFallback: { [daemon, limit] in
+                    daemon.recentEvents(limit: limit)
+                },
                 invocation: { proxy, reply in
                     proxy.recentEvents(limit: limit, reply)
                 }
@@ -183,51 +202,56 @@ public final class XPCHost {
     }
 
     public func resetForUninstall() -> FanControlResult {
-        let localFallback = daemon.resetForUninstall()
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon] in
+                    daemon.resetForUninstall()
+                },
                 invocation: { proxy, reply in
                     proxy.resetForUninstall(reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.resetForUninstall()
         }
     }
 
     public func systemWake() -> FanControlResult {
-        let localFallback = daemon.handleSystemWake()
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon] in
+                    daemon.handleSystemWake()
+                },
                 invocation: { proxy, reply in
                     proxy.systemWake(reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.handleSystemWake()
         }
     }
 
     public func systemSleep() -> FanControlResult {
-        let localFallback = daemon.handleSystemSleep()
         do {
             return try call(
-                withFallback: localFallback,
+                withFallback: { [daemon] in
+                    daemon.handleSystemSleep()
+                },
                 invocation: { proxy, reply in
                     proxy.systemSleep(reply)
                 }
             )
         } catch {
-            return localFallback
+            return daemon.handleSystemSleep()
         }
     }
 
     public func currentState() -> FanControlSnapshot {
         do {
             return try call(
-                withFallback: daemon.serviceSnapshot(),
+                withFallback: { [daemon] in
+                    daemon.serviceSnapshot()
+                },
                 invocation: { proxy, reply in
                     proxy.currentState(reply)
                 }
@@ -250,6 +274,28 @@ public final class XPCHost {
         }
     }
 
+    private static func isRemoteServiceRunning(serviceName: String) -> Bool {
+        let label = ProcessInfo.processInfo.environment[FanControlXPCDefaults.helperLaunchdServiceLabelEnv]
+            ?? FanControlXPCDefaults.helperServiceLabel
+        let process = Process()
+        process.launchPath = "/usr/bin/env"
+        process.arguments = ["launchctl", "print", "system/\(label)"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            return false
+        }
+        return output.contains("state = running") && output.contains(serviceName)
+    }
+
     private func createRemoteProxy() throws -> FanControlXPCServiceProtocol {
         guard case .remote(let serviceName) = transport else {
             throw FanControlXPCError.unavailable("local mode")
@@ -270,11 +316,11 @@ public final class XPCHost {
     }
 
     private func call<T: Codable>(
-        withFallback fallback: T,
+        withFallback fallback: () -> T,
         invocation: (_ proxy: FanControlXPCServiceProtocol, _ reply: @escaping (Data?, String?) -> Void) -> Void
     ) throws -> T {
         guard case .remote = transport else {
-            return fallback
+            return fallback()
         }
 
         guard let proxy = try? createRemoteProxy() else {
