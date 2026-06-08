@@ -71,7 +71,7 @@ $SUDO rm -f "$HELPER_BIN"
 
 if [[ "$KEEP_BINS" -eq 0 ]]; then
   echo "Removing user binaries..."
-  rm -f "$APP_BIN" "$CLI_BIN" "$APP_LAUNCHER"
+  $SUDO rm -f "$APP_BIN" "$CLI_BIN" "$APP_LAUNCHER"
 fi
 
 for file in "/var/log/mfancontrol-helper.log" "/var/log/mfancontrol-helper.err" "/tmp/mfancontrol-app.log" "/tmp/mfancontrol-app.err"; do
